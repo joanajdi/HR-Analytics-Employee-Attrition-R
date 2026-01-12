@@ -1,0 +1,1135 @@
+---
+title: "Employee Attrition Analysis (HR Analytics)"
+subtitle: "Identification of Critical Factors for Talent Retention"
+author: "Joana Inácio | Data Analyst"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    code_folding: hide
+    theme: cosmo           
+    highlight: pygments   
+    toc: true
+    toc_float: true
+    code_download: true    
+    number_sections: false
+---
+```{r setup, include=FALSE}
+# Data manipulation and cleaning
+library(dplyr)
+library(janitor)
+library(fastDummies)
+library(skimr)
+
+# Visualization
+library(ggplot2)
+library(corrplot)
+library(gridExtra)
+library(kableExtra)
+
+# Modeling and evaluation
+library(caTools)
+library(ROSE)
+library(randomForest)
+library(caret)
+
+knitr::opts_chunk$set(
+  echo = TRUE,          # Show R code in the report (TRUE) or hide it (FALSE)
+  warning = FALSE,      # Hide warning messages 
+  message = FALSE,      # Hide normal messages
+  fig.align = "center", # Center all graphics
+  fig.width = 10,       # Default figure width
+  fig.height = 6,       # Default figure height
+  comment = NA,         # Remove '##' from code output lines
+  out.width = "80%"     # Figures occupy 80% of page width
+)
+```
+
+# Introduction and Context
+## The Business Problem
+Employee turnover (also known as _Employee Attrition_) is one of the greatest challenges faced by organisations—and one of the most financially costly.  
+Studies indicate that the cost of replacing an employee can range from **50% to 200% of their annual salary**, considering recruitment, training, and productivity loss expenses.
+
+Beyond the financial impact, a high _turnover_ rate affects team morale, company culture, and project continuity.  
+Therefore, the ability to predict **who** is at risk of leaving and, more importantly, **why**, represents a crucial competitive advantage for the Human Resources (HR) department.
+
+## About the Dataset
+This project uses the dataset **“IBM HR Analytics Employee Attrition & Performance”**, publicly available on Kaggle.  
+The dataset was created by IBM data scientists and, although synthetic, accurately reflects the real challenges of corporate environments.
+
+It contains **1,470 observations** (employees) and **35 variables** (features).
+
+## Variable Dictionary
+Our target variable is **_Attrition_**, which indicates whether the employee **left** ("Yes") or **remained** ("No") in the company.
+
+The remaining variables can be grouped into three main categories explored throughout the analysis:
+
+1. **Demographic**: `Age`, `Gender`, `MaritalStatus`, `DistanceFromHome`
+2. **Work-related**: `Department`, `JobRole`, `JobLevel`, `OverTime`, `BusinessTravel`
+3. **Compensation and Satisfaction**: `MonthlyIncome`, `PercentSalaryHike`, `StockOptionLevel`, `JobSatisfaction`, `EnvironmentSatisfaction`
+
+For readability, only the most relevant variables are listed above.  
+A complete dictionary of all 35 variables and their data types is presented in the technical data inspection section.
+
+## Project Objectives
+The core objective of this project is to develop a **People Analytics** solution capable of anticipating employee attrition and providing management with **data‑driven retention strategies**.  
+To achieve that, the analysis follows three vertical pillars:
+
+* **Root‑Cause Diagnosis** – Quantify the true impact of risk factors, testing the hypothesis that workload (`OverTime`) and commuting distance (`DistanceFromHome`) act as catalysts for _burnout_.
+* **Retention Hierarchy** – Determine, using Machine Learning algorithms, which factors weigh more in the decision to leave: financial incentives (`MonthlyIncome`) or intangible elements such as job satisfaction.
+* **Predictive Modeling** – Train classification algorithms (Logistic Regression and Random Forest) to identify at‑risk employees with high precision, enabling preventive HR action.
+
+# Data Import and Initial Inspection
+```{r importacao, message=FALSE, warning=FALSE}
+# Data Import
+# Read the original file
+ibm_hr <- read.csv("data/WA_Fn-UseC_-HR-Employee-Attrition.csv", sep = ";")
+
+library(janitor)
+library(dplyr)
+
+# Data Cleaning and Standardization
+# Here we create the object 'ibm_clean'
+
+ibm_clean <- ibm_hr %>% 
+  clean_names() %>% 
+  # Remove columns with no variability
+  select(-any_of(c("employee_count", "over18", "standard_hours", "employee_number")))
+
+# Visualization (kable)
+library(kableExtra)
+ibm_clean %>% 
+  select(age, attrition, monthly_income, job_role, over_time, total_working_years) %>% 
+  head(10) %>% 
+  kable(caption = "Table 1: Sample of Key Variables for Attrition Analysis") %>% 
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = TRUE, 
+    position = "center"
+  ) %>% 
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+```
+
+The dataset consists of **35 variables** covering three main dimensions: **demographic characteristics**, **financial factors**, and **performance indicators**.
+
+At this initial stage, the analysis focuses on variables with the **highest explanatory potential for employee attrition**, namely **monthly income**, **total years of experience in the company**, and **overtime work**.
+
+Empirical evidence and preliminary analyses suggest a significant relationship between these factors and the **probability of employee departure**, establishing them as fundamental starting points for deeper analytical exploration.
+
+# Data Preparation
+## Data Cleaning
+The initial descriptive analysis revealed two key aspects regarding the quality and structure of the dataset:
+
+1. **Data Quality** – No missing values were identified across any variable, which greatly simplifies the preprocessing stage.
+
+2. **Redundant and Non‑Informative Variables** – Three variables were found to have constant values across all observations (standard deviation = 0), and one variable served exclusively as a unique identifier. As these show no variability or predictive contribution, they were removed from the dataset.
+
+The **removed variables** were:
+
+* `EmployeeCount`: Constant value equal to “1”;
+* `Over18`: All employees recorded as adults (“Y”);
+* `StandardHours`: Fixed value “80” for all records;
+* `EmployeeNumber`: Unique identifier for each employee, with no predictive relevance.
+
+The exclusion of these variables reduces data dimensionality **without losing meaningful information**, contributing to a more efficient and interpretable analytical model.
+
+```{r limpeza_especifica, message=FALSE}
+# Standardization of Column Names
+ibm_clean <- ibm_hr %>% 
+  clean_names()
+
+# Remove Invariant Variables
+columns_to_remove <- c("employee_count", "over18", "standard_hours", "employee_number")
+
+ibm_clean <- ibm_clean %>% 
+  select(-any_of(columns_to_remove))
+
+# Cleaning Summary
+cat("Dataset cleaned successfully.\n",
+    "Total Original Columns: ", ncol(ibm_hr), "\n",
+    "Total Columns After Cleaning: ", ncol(ibm_clean))
+```
+
+# Exploratory Data Analysis (EDA)
+The main goal of this phase is to understand the distribution of the variables and identify patterns or relationships that may explain the phenomenon of **employee turnover** (_employee attrition_).
+
+The exploration begins with the target variable, `Attrition`, which indicates whether the employee **remained with the company** (`No`) or **chose to leave** (`Yes`).
+
+Analysing this variable provides an initial understanding of the balance between active employees and those who left the organisation, helping assess the real magnitude of the attrition phenomenon.
+
+## Target Variable Analysis (_Attrition_)
+How many employees actually left the company?
+
+```{r analise_targe}
+# Create Frequency Table for the Target Variable
+tabela_target <- ibm_clean %>%
+  count(attrition) %>%
+  mutate(
+    percentage = (n / sum(n)) * 100,
+    attrition = ifelse(attrition == "Yes", "Left (Yes)", "Stayed (No)")
+  )
+
+# Display Table with kableExtra
+tabela_target %>%
+  kable(
+    caption = "Distribution of the Target Variable (Attrition)",
+    col.names = c("Status", "Total (n)", "Percentage (%)"),
+    digits = 1
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50") %>%
+  column_spec(3, bold = TRUE, color = ifelse(tabela_target$percentage < 20, "#e74c3c", "#2c3e50"))
+
+# Visualization
+ggplot(ibm_clean, aes(x = attrition, fill = attrition)) +
+  geom_bar(width = 0.6, alpha = 0.9) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Overview of Employee Turnover",
+    subtitle = "Only 16% of employees left the organisation during the analysed period",
+    x = "Attrition Decision",
+    y = "Number of Employees"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    panel.grid.major.x = element_blank()
+  )
+```
+**_Initial Insight_**:  
+The **attrition rate** is approximately **16%**, indicating that the majority of employees (around **84%**) remained with the company during the analysed period.
+
+This shows a clear **class imbalance** in the target variable, with a predominance of employees who did not leave the organisation.
+
+This point is particularly important for the later stages of **predictive modelling**, as the class disproportion may lead the model to **overfit the majority class** (employees who stay) and **underestimate** the minority cases (employees who leave), which are precisely the most valuable to understand and predict.
+
+## Demographic Analysis: Does Age Matter?
+Next, we analyse the distribution of employee ages between those who left and those who stayed.  
+A boxplot is used to visualise the median and data dispersion.
+
+```{r analise_idade}
+# Plot: Age Distribution by Attrition
+ggplot(ibm_clean, aes(x = attrition, y = age, fill = attrition)) +
+  geom_jitter(alpha = 0.2, color = "grey40", width = 0.2) +
+  geom_boxplot(alpha = 0.8, outlier.colour = "red", width = 0.5) +
+  
+  # Colors consistent with the rest of the report
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  labs(
+    title = "The Age Factor in Talent Retention",
+    subtitle = "Employees who leave (Yes) show a visibly lower median age",
+    x = "Attrition Decision",
+    y = "Age (Years)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    panel.grid.major.x = element_blank(),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+**_Insights on Age:_**
+
+The boxplot analysis reveals a clear pattern in the relationship between **age** and **employee attrition**:
+
+1. **Youth Factor** – There is a tendency for younger employees to show a **higher propensity to leave the company**. The median age of those who leave is visibly lower than that of those who stay.  
+
+2. **Risk Zone** – The highest concentration of departures occurs between **25 and 35 years old**, a range commonly associated with **career mobility** and the **search for advancement opportunities**. This behaviour may reflect challenges faced by the organisation in **retaining young talent** or providing **structured development pathways**.  
+
+3. **Senior Stability** – Employees **over 40 years old** demonstrate **greater stability** and a **lower probability of leaving**. The few cases in this age group appear as _outliers_ in the plot, suggesting isolated departures (e.g., retirement, personal relocation, or internal restructuring).  
+
+**Conclusion:**  
+The findings highlight the need for a **segmented retention strategy**:
+
+* **Junior and mid‑level employees** (25–35 years old) should be targeted with initiatives focused on _engagement_, internal mobility, and career‑growth management.  
+* For **senior employees**, emphasis should be placed on recognition, mentorship, and knowledge transfer, reinforcing a sense of belonging and organisational continuity.
+
+```{r analise_estado_civil}
+# Bar Chart: Attrition Proportion by Marital Status
+ggplot(ibm_clean, aes(x = marital_status, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  # Format Y-axis as percentage
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  
+  labs(
+    title = "Impact of Marital Status on Retention",
+    subtitle = "Single employees show a significantly higher attrition rate",
+    x = "Marital Status",
+    y = "Proportion of Employees",
+    fill = "Left?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    legend.position = "top",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+```
+
+**_Insights on Marital Status:_**
+
+The analysis suggests that **marital status** is a **significant factor influencing employee attrition**:
+
+1. **Higher risk among single employees** – Single employees display an **attrition rate above 25%**, more than double that of married or divorced employees (approximately 11%). This indicates a strong association between marital status and the probability of leaving the company.  
+
+2. **Potential behavioural explanation** – This pattern aligns with empirical evidence in human resources research, which shows that professionals without dependants or family commitments tend to exhibit **greater job mobility**. Their **geographical and financial flexibility** facilitates the pursuit of new opportunities or acceptance of offers in different locations.  
+
+**Conclusion:**  
+Talent management strategies may benefit from **differentiated retention approaches** across employee groups, for instance, designing **career‑progression initiatives** and **engagement programmes** to strengthen the commitment of younger, single employees to the organisation.
+
+## Professional Analysis: Workload and Business Travel
+
+Could excessive workload (`OverTime`) and frequent travel (`BusinessTravel`) lead to fatigue and increased attrition?
+
+```{r analise_carga_trabalho}
+# Plot: Overtime Hours (p1)
+p1 <- ggplot(ibm_clean, aes(x = over_time, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impact of Overtime Hours", 
+    x = "Works Overtime?", 
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank()
+  )
+
+# Plot: Business Travel (p2)
+p2 <- ggplot(ibm_clean, aes(x = business_travel, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impact of Business Travel", 
+    x = "Travel Frequency", 
+    y = NULL,
+    fill = "Left?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+
+# Combine both visualizations
+library(gridExtra)
+grid.arrange(
+  p1, p2, ncol = 2,
+  top = grid::textGrob(
+    "Workload and Mobility Analysis",
+    gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")
+  )
+)
+```
+
+**_Insights on Workload and Lifestyle:_**
+
+The analysis of workload and professional mobility reveals a clear association between **exhaustion** and **employee attrition**:
+
+1. **Impact of Overtime Hours** – The effect of overtime work is particularly striking. Employees who do **not** work overtime show an attrition rate close to **10%**, while among those who regularly exceed their working hours, this rate **triples to around 30%**.  
+This result serves as a clear indicator of **_burnout_ risk** and suggests that excessive workload may be linked to dissatisfaction and emotional fatigue.
+
+2. **The Weight of Mobility** (`BusinessTravel`) – There is a visible upward trend between **travel frequency** and **attrition probability**:
+
+   * Employees who **do not travel** (`Non‑Travel`) show the lowest attrition rate (<10%);  
+   * Those who **travel frequently** (`Travel_Frequently`) face a risk close to **25%**, indicating that their **work‑life balance** is substantially compromised.
+
+**Conclusion:**  
+Both **work overload** and **excessive mobility** emerge as relevant risk factors for talent retention.  
+Organisational policies that promote **healthy working‑hour limits**, **flexibility**, and **work‑life balance** can significantly mitigate this type of turnover.
+
+## Financial Analysis: Does Salary Matter?
+The distribution of monthly income (`MonthlyIncome`) was analysed to determine whether lower salaries contribute to higher attrition.
+
+```{r analise_salario}
+# Density Plot: Monthly Income by Attrition
+ggplot(ibm_clean, aes(x = monthly_income, fill = attrition)) +
+  geom_density(alpha = 0.7, color = "white") +
+  
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  # Format X-axis as Currency (USD)
+  scale_x_continuous(labels = scales::dollar_format(), breaks = seq(0, 20000, 2500)) +
+  
+  labs(
+    title = "Salary Distribution and Attrition Risk",
+    subtitle = "The probability of leaving is drastically higher for salary ranges below $5,000",
+    x = "Monthly Salary (USD)",
+    y = "Employee Density",
+    fill = "Attrition Status"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+**_Financial Insights:_**
+
+The analysis of salary distribution reveals that **compensation is a decisive factor** in the likelihood of employee attrition, showing a markedly distinct pattern across income ranges:
+
+1. **The $5,000 Threshold** – There is a significant concentration of departures among employees with monthly salaries below $5,000. In this range, the density of attrition cases is substantially higher, suggesting that lower income levels are associated with greater workforce volatility.  
+
+2. **Retention at Higher Salary Levels** – As salary increases (particularly above $10,000), the probability of leaving drops sharply. Among higher‑earning employees, the density curve associated with “staying” clearly dominates, indicating greater stability and professional satisfaction.  
+
+**Conclusion:**  
+The observed pattern suggests that the company faces greater retention challenges among **operational and junior‑level employees**, where compensation may not fully meet market expectations.  
+More **competitive pay strategies**, complemented by **career‑development and internal advancement plans**, could be decisive in reducing attrition within these salary groups.
+
+## Job Function and Satisfaction Analysis
+Before proceeding to the numerical correlations, it is important to analyse two key categorical variables: **Job Role (`JobRole`)** and **Job Satisfaction (`JobSatisfaction`)**.  
+
+The goal is to determine whether specific job roles exhibit higher attrition rates.
+
+```{r analise_cargo_satisfacao}
+# Turnover by Job Role
+p_role <- ggplot(ibm_clean, aes(y = reorder(job_role, (attrition == "Yes")), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Turnover by Job Role",
+    subtitle = "Sales, HR, and Laboratory Technicians show higher risk",
+    y = NULL,
+    x = "Proportion of Attrition"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+
+# Impact of Job Satisfaction
+p_sat <- ggplot(ibm_clean, aes(x = factor(job_satisfaction), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impact of Job Satisfaction",
+    subtitle = "Low satisfaction levels (1 and 2) correlate with higher churn",
+    x = "Satisfaction Level (1: Low → 4: High)",
+    y = "Proportion",
+    fill = "Left?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    legend.position = "right",
+    panel.grid.major.x = element_blank()
+  )
+
+library(gridExtra)
+grid.arrange(p_role, p_sat, nrow = 2, 
+             top = grid::textGrob("Job Role and Sentiment Analysis", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+
+**_Insights on Job Role and Satisfaction:_**
+
+The analysis reveals **distinct attrition patterns by job function**, highlighting critical areas within the organisation:
+
+1. **Sales Roles (_Sales Representatives_)** – This group shows the **highest attrition rate, around 40%**, which suggests **high commercial pressure**, demanding targets, or **unattractive incentive structures**. Given their strategic importance to the company’s overall performance, this group should be treated as a **top priority for retention initiatives**.  
+
+2. **Laboratory Technicians and Human Resources** – Both functions show **attrition rates around 25%**, clearly above the organisational average.  
+
+3. **Leadership Retention** – Managerial and executive roles (_Managers_ and _Directors_) demonstrate **very high stability**, suggesting that turnover is mainly concentrated at **mid‑level and operational positions**.  
+This pattern emphasises the importance of designing **retention and development strategies specifically targeted at the most vulnerable roles**.
+
+**Conclusion:**  
+Attrition appears to be concentrated in **entry‑level and operational support roles**, requiring policies oriented toward improving the **organisational climate**, **reviewing incentive systems**, and **expanding career‑growth opportunities** in order to strengthen commitment and retention within these groups.
+
+## Tenure and Commute Time Analysis  
+Employee tenure (`YearsAtCompany`) and commuting distance (`DistanceFromHome`) were analysed to assess whether the company loses recently hired talent and whether daily commuting influences the decision to leave.
+
+```{r analise_antiguidade_distancia}
+# Plot: Tenure (Years at the Company)
+p_years <- ggplot(ibm_clean, aes(x = years_at_company, fill = attrition)) +
+  geom_density(alpha = 0.7, color = "white") +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Life Cycle: Employee Tenure",
+    subtitle = "Churn risk is critical within the first 2 years (onboarding period)",
+    x = "Years at Company",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.minor = element_blank()
+  )
+
+# Plot: Distance from Home (Boxplot)
+p_dist <- ggplot(ibm_clean, aes(x = attrition, y = distance_from_home, fill = attrition)) +
+  geom_boxplot(alpha = 0.8, width = 0.6, outlier.colour = "#E74C3C") +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Logistics: Home-to-Work Distance",
+    subtitle = "Employees who leave tend to travel longer distances",
+    x = "Attrition Decision",
+    y = "Distance (km/miles)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank()
+  )
+
+# Arrange both plots
+library(gridExtra)
+grid.arrange(p_years, p_dist, nrow = 2, 
+             top = grid::textGrob("Retention and Logistics Analysis", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+
+**_Insights on Tenure and Logistics:_**
+
+The analysis highlights **critical points in the employee life cycle**, with direct implications for organisational retention and performance:
+
+1. **Onboarding Phase – Early Exit Risk**:  
+The tenure plot shows a sharp peak in attrition within the first two years of employment, precisely during the integration and adaptation period.  
+This result suggests weaknesses in onboarding processes, early supervision, or alignment of expectations between the employee and the organisation. Investing in **structured onboarding and mentorship programmes** can substantially reduce this type of premature talent loss.  
+
+2. **Commuting Cost – A Logistical Strain Factor**:  
+The home‑to‑work distance boxplot reveals that employees who leave tend to commute longer distances, signalling a potential negative impact of travel time and effort on overall satisfaction.  
+The wear and tear associated with daily commuting — especially when combined with heavy workloads — increases the probability of voluntary turnover.
+Measures such as **hybrid work models**, **flexible scheduling**, or **transport incentives** can help mitigate this effect.  
+
+**Conclusion:**  
+Effective retention requires a **holistic approach** that addresses both the **initial employee experience (onboarding)** and the **logistical sustainability** of their work routine.  
+These two dimensions are crucial for consolidating organisational commitment during the early years of tenure.
+
+## Gender and Work-Life Balance Analysis
+
+```{r analise_genero_w}
+# Turnover by Gender (p_gen)
+p_gen <- ggplot(ibm_clean, aes(x = gender, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Turnover by Gender", 
+    subtitle = "Is there a disparity between men and women?",
+    x = NULL, 
+    y = "Proportion"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", # Hide legend here to avoid repetition
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+# Work-Life Balance Analysis (p_wlb)
+p_wlb <- ggplot(ibm_clean, aes(x = factor(work_life_balance), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0, 0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Work-Life Balance", 
+    subtitle = "The impact of work-life balance on attrition decisions",
+    x = "Level (1: Poor → 4: Excellent)", 
+    y = NULL,
+    fill = "Left?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+# Arrange both side by side
+library(gridExtra)
+grid.arrange(p_gen, p_wlb, ncol = 2, 
+             top = grid::textGrob("Well-Being and Diversity", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+
+**_Insights on Gender and Well-Being:_**
+
+To conclude the bivariate analysis, two **social and behavioural factors** stand out as relevant to employee attrition:
+
+1. **Gender Neutrality** – The attrition rate appears **relatively uniform between men and women**, ranging from 15% to 17%. This result suggests the **absence of bias or discriminatory practices** associated with gender and indicates **equitable organisational experiences** across groups.  
+
+2. **Work-Life Balance** – The _Work‑Life Balance_ variable exhibits a “critical point” at the lowest satisfaction level. Employees who rate their balance as “Poor” (Level 1) show an attrition rate near **30%**, **double** that observed in the other levels.  
+Improving work‑life balance even marginally — for example, from Level 1 to Level 2 — produces a substantial reduction in turnover rates.  
+This indicates that **targeted and realistic interventions**, such as flexible schedules, hybrid‑work policies, or enhanced team support, can have **immediate positive effects** on retention, without necessarily achieving ideal satisfaction levels (Level 4).  
+
+**Conclusion:**  
+The findings indicate a **gender‑balanced organisational culture**, yet one that remains **vulnerable to well‑being and work‑life balance factors**.  
+Investment in **occupational health**, **flexible‑work arrangements**, and **employee‑care initiatives** will likely yield direct returns in terms of employee satisfaction and retention.  
+
+# Multivariate Analysis (Correlations)
+At this stage, the relationships between numerical variables were examined to identify **multicollinearity** (redundancy).  
+A visual **correlation matrix** was used for this purpose.
+
+```{r}
+ibm_numeric <- ibm_clean %>% select(where(is.numeric))
+cor_matrix  <- cor(ibm_numeric, use = "complete.obs")
+
+# Correlation Plot
+color_palette <- colorRampPalette(c("#E74C3C", "#FFFFFF", "#2C3E50"))(200)
+
+corrplot(cor_matrix, 
+         method = "color", 
+         type = "upper", 
+         order = "hclust",         
+         tl.col = "black", 
+         tl.cex = 0.7, 
+         col = color_palette,         
+         title = "\n Intervariable Correlation Map", 
+         mar = c(0, 0, 2, 0),
+         diag = FALSE)
+
+# Correlation Table
+cor_table <- as.data.frame(as.table(cor_matrix))
+
+cor_table_refined <- cor_table %>%
+  filter(Var1 != Var2) %>%
+  filter(!duplicated(paste0(
+    pmax(as.character(Var1), as.character(Var2)), 
+    pmin(as.character(Var1), as.character(Var2))
+  ))) %>%
+  arrange(desc(abs(Freq))) %>%
+  rename(Variable_1 = Var1, Variable_2 = Var2, Correlation = Freq)
+
+# Improve Table Design
+kable(head(cor_table_refined, 10), 
+      caption = "Top 10 Strongest Correlations Identified", 
+      digits = 2,
+      col.names = c("Variable 1", "Variable 2", "Correlation Strength")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = TRUE,           
+    position = "center",      
+    font_size = 14            
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50") %>%
+  # Highlight in red correlations that may cause multicollinearity (> 0.7)
+  column_spec(3, bold = TRUE, 
+              color = ifelse(abs(head(cor_table_refined$Correlation, 10)) > 0.7, "#E74C3C", "black"))
+```
+
+**_Insights from the Correlation Analysis:_**
+
+The correlation matrix and table reveal clear patterns of **multicollinearity**, exposing variables that are **strongly redundant** and will require specific treatment during the **data preprocessing** stage:
+
+1. **Redundancy between salary and job level** – The strongest correlation in the dataset is observed between `MonthlyIncome` and `JobLevel` (r = 0.95).  
+   **Interpretation:** These variables are, in practice, statistically overlapping — the job level almost entirely dictates the salary.  
+   Keeping both in the model may introduce coefficient instability and distort the predictive importance of features. It is therefore advisable to retain only one representative variable (e.g., `JobLevel`).  
+
+2. **Tenure cluster** – A cluster of highly correlated time‑related variables was identified: `YearsAtCompany`, `YearsInCurrentRole`, and `YearsWithCurrManager`, with correlations ranging between 0.71 and 0.77.  
+   **Interpretation:** Employees with longer tenure tend to remain in the same role under the same manager. To avoid redundancy, it is preferable to include only one of these variables (e.g., `YearsAtCompany`) or create an **aggregated “career stagnation” variable** to capture this dynamic.  
+
+3. **Professional experience and compensation** – The variable `TotalWorkingYears` shows strong correlations with both `JobLevel` (0.78) and `MonthlyIncome` (0.77).  
+   **Interpretation:** The company’s progression and compensation system appears to be **highly aligned with seniority**, valuing primarily accumulated experience.  
+
+4. **Performance and rewards** – The correlation of 0.77 between `PerformanceRating` and `PercentSalaryHike` confirms that salary increases are **directly linked to annual performance evaluation**, reflecting a typical meritocratic policy.  
+
+**Conclusion of the Exploratory Data Analysis (EDA):**  
+The bivariate and correlation analyses indicate that **employee attrition is associated with demographic and job‑related factors** (younger age, operational roles, frequent travel, and lower salaries).  
+At the technical level, strong relationships were found among variables related to **hierarchy, tenure, and remuneration**, which will need to be handled in preprocessing.
+
+These findings establish the foundation for the **data preprocessing phase**, where excessive correlations will be addressed and the **most relevant variables** selected for predictive modelling.
+
+# Data Preprocessing
+## Feature Selection
+
+```{r}
+# Execute Feature Selection
+ibm_prep <- ibm_clean %>%
+  select(-job_level) %>%  
+  select(-any_of(c("employee_number", "employee_count", "over18", "standard_hours"))) %>%
+  mutate(attrition = ifelse(attrition == "Yes", 1, 0))
+
+# Create Summary Table
+prep_summary <- data.frame(
+  Step = c("Original Columns", "Columns Removed", "Final Total", "Target (Attrition)"),
+  Value = c(ncol(ibm_clean), 
+            ncol(ibm_clean) - ncol(ibm_prep), 
+            ncol(ibm_prep), 
+            "Converted to Binary (0/1)")
+)
+
+prep_summary %>%
+  kable(caption = "Summary of Preprocessing and Feature Selection") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+```
+
+After the exploratory analysis phase, the data were prepared for **predictive modelling**.
+
+This stage is essential to ensure that the resulting model is not influenced by **statistical noise** or **redundant information**, thus guaranteeing both **robustness** and **interpretability** of results.
+
+Key decisions in this phase:
+
+1. **Elimination of redundancy (multicollinearity)** – As identified in the correlation matrix, the variables `monthly_income` and `job_level` showed a strong correlation of 0.95.  
+   To avoid **overfitting** and simplify the model, only the most representative variable was retained, prioritising direct financial impact.
+
+2. **Conversion of the target variable** – The variable `attrition` was transformed into a **binary format (0/1)**, allowing supervised classification algorithms to be applied and simplifying the evaluation of predictive performance.
+
+These operations ensure that the final dataset is **statistically balanced**, **computationally efficient**, and **ready for the next stage of modelling**.
+
+## Dummy Variable Creation
+```{r}
+library(fastDummies)
+
+ibm_final <- dummy_cols(ibm_prep, 
+                        remove_first_dummy = TRUE,      
+                        remove_selected_columns = TRUE) %>%
+             clean_names() # Ensures the new column names are standardised
+
+# Create a visual comparison
+dim_comparison <- data.frame(
+  Metric = c("Columns Before Dummies", "Columns After Dummies (Expanded)", "New Variables Created"),
+  Quantity = c(ncol(ibm_prep), ncol(ibm_final), ncol(ibm_final) - ncol(ibm_prep))
+)
+
+# Display impact table
+dim_comparison %>%
+  kable(caption = "Impact of Categorical Variable Transformation (One-Hot Encoding)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+
+# Show examples of new columns
+data.frame(New_Columns_Examples = colnames(ibm_final)[(ncol(ibm_prep)+1):(ncol(ibm_prep)+6)]) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "bordered", full_width = FALSE, position = "float_right")
+```
+
+Most Machine Learning algorithms are **not able to process textual variables directly**.
+
+To overcome this limitation, the **One‑Hot Encoding** technique (also known as the creation of *dummy variables*) was applied.
+
+Procedures performed:
+
+1. **Transformation of categorical variables** – Qualitative variables such as `BusinessTravel` and `Department` were converted into multiple binary columns (0/1), representing the presence or absence of each distinct category.
+
+2. **Prevention of multicollinearity** – To avoid the so‑called _dummy variable trap_, the parameter `remove_first_dummy = TRUE` was activated, removing one category from each group.  
+   For example, in a variable with the modalities *Male* and *Female*, only one is retained since the absence of one automatically implies the presence of the other.
+
+3. **Controlled dataset expansion** – After the process, the total number of variables increased from 30 to 44, resulting in 14 newly created derived variables.
+
+This expansion allows for a richer representation of qualitative information **without introducing redundancy** or compromising the **stability of predictive models**.
+
+## Data Splitting (Training and Testing)
+
+```{r data_split, message=FALSE, warning=FALSE}
+library(caTools)
+library(dplyr)
+library(kableExtra)
+
+# Stratified Split
+set.seed(123)
+split <- sample.split(ibm_final$attrition, SplitRatio = 0.70)
+
+train_data <- subset(ibm_final, split == TRUE)
+test_data  <- subset(ibm_final, split == FALSE)
+
+# Create Summary Table
+split_summary <- data.frame(
+  Dataset = c("Training (70%)", "Testing (30%)", "Total"),
+  Observations = c(nrow(train_data), nrow(test_data), nrow(ibm_final)),
+  Attrition_Rate = c(
+    paste0(round(mean(train_data$attrition) * 100, 1), "%"),
+    paste0(round(mean(test_data$attrition) * 100, 1), "%"),
+    paste0(round(mean(ibm_final$attrition) * 100, 1), "%")
+  )
+)
+
+# Display Table
+split_summary %>%
+  kable(caption = "Data Split: Consistency and Stratification Check") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = FALSE, 
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50") %>%
+  column_spec(3, bold = TRUE, color = "#E74C3C")
+```
+
+The dataset was divided using a **stratified sampling approach**, ensuring that the proportion of the target variable (`Attrition`) was maintained across both subsets — **Training (70%)** and **Testing (30%)**.
+
+As shown in the table, the **churn rate** remains perfectly consistent at **16.1%** in both sets.  
+This statistical consistency is essential to prevent sampling distortion, ensuring that the test set functions as a **representative replica of the original dataset**.
+
+Consequently, the performance metrics obtained during the validation phase realistically and reliably reflect the behaviour of the attrition phenomenon within the organisation, increasing the **credibility and generalisability** of the model results.
+
+## Class Balancing
+
+```{r}
+library(ROSE)
+library(ggplot2)
+library(gridExtra)
+
+# Apply ROSE to balance only the TRAINING set
+set.seed(123)
+train_balanced <- ROSE(attrition ~ ., data = train_data, seed = 123)$data
+
+# Create data for the comparative plot
+before <- as.data.frame(table(train_data$attrition))
+before$Status <- "1. Before (Unbalanced)"
+
+after <- as.data.frame(table(train_balanced$attrition))
+after$Status <- "2. After (Balanced with ROSE)"
+
+comparison <- rbind(before, after)
+
+# Plot
+ggplot(comparison, aes(x = Var1, y = Freq, fill = Var1)) +
+  geom_bar(stat = "identity", width = 0.6, alpha = 0.9) +
+  facet_wrap(~Status) +
+  scale_fill_manual(values = c("0" = "#2C3E50", "1" = "#E74C3C")) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, max(comparison$Freq) * 1.1)) +
+  labs(
+    title = "Data Rebalancing Strategy (ROSE)",
+    subtitle = "Adjustment of the minority class to optimise model learning",
+    x = "Attrition Status (0 = No, 1 = Yes)",
+    y = "Number of Records"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 14, color = "#2c3e50"),
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+The effectiveness of a predictive model depends heavily on the **quality** and **statistical balance** of the training data.  
+
+As identified earlier, the target variable (`Attrition`) shows a **marked class imbalance**, with only **16.1% of positive cases** (employees who left the company).  
+In real-world contexts, such asymmetry often leads the model to **favour predicting retention** while **underestimating churn cases**.
+
+To address this issue, the **ROSE algorithm** (Random Over‑Sampling Examples) was applied exclusively to the **training dataset**.  
+This technique generates **synthetic observations based on the distribution of the minority class**, preserving the statistical integrity of the original dataset.
+
+**Main advantages of rebalancing:**
+
+* **Levelled learning** – The model becomes exposed to a balanced distribution (approximately 50/50) between employees who stay and those who leave, improving its generalisation capability.  
+* **Improved sensitivity (_recall_)** – Increases the ability of the model to correctly identify departures, allowing **early detection of potential talent losses**.  
+* **Preservation of test integrity** – The rebalancing process was applied only to the training data, leaving the test set unchanged.  
+
+# Machine Learning
+## Model 1: Logistic Regression
+
+```{r}
+# Train the Model
+logistic_model <- glm(attrition ~ ., data = train_balanced, family = "binomial")
+
+# Make Predictions
+predicted_prob <- predict(logistic_model, newdata = test_data, type = "response")
+predicted_class <- ifelse(predicted_prob > 0.50, 1, 0)
+
+# Create Confusion Matrix
+conf_matrix <- table(Actual = test_data$attrition, Predicted = predicted_class)
+df_confusion <- as.data.frame(conf_matrix)
+
+# Confusion Matrix Plot (Heatmap)
+library(ggplot2)
+ggplot(df_confusion, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "white", size = 8, fontface = "bold") +
+  scale_fill_gradient(low = "#34495E", high = "#E74C3C") +
+  labs(
+    title = "Confusion Matrix: Logistic Regression",
+    subtitle = "Visualisation of Correct and Incorrect Predictions",
+    x = "Model Prediction (0 = Stay, 1 = Leave)",
+    y = "Actual Outcome (0 = Stay, 1 = Leave)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16),
+    axis.title = element_text(face = "bold")
+  )
+
+# Metrics Table
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+recall <- conf_matrix[2, 2] / sum(conf_matrix[2, ])
+
+metrics <- data.frame(
+  Metric = c("Overall Accuracy", "Sensitivity (Recall)"),
+  Result = c(paste0(round(accuracy * 100, 2), "%"),
+              paste0(round(recall * 100, 2), "%"))
+)
+
+library(kableExtra)
+metrics %>%
+  kable(caption = "Model 1 Performance") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+```
+
+**Model 1 Performance Analysis (Logistic Regression):**
+
+The first model was trained using the **balanced dataset** obtained through the **ROSE technique**, achieving an **overall accuracy of 72.79%**.  
+Although this metric is satisfactory, accuracy alone is insufficient for evaluating performance in a **talent retention problem**, where the cost of incorrectly predicting an employee’s departure is particularly high.
+
+The main results obtained on the **test set (441 employees)** are presented below:
+
+1. **Detection Capability (Recall): 73.2%**
+
+In the test set, there were 71 employees who actually left the company.  
+The model correctly identified 52 of these 71 cases, demonstrating a **strong detection capability**, as it successfully flagged approximately **three out of four at‑risk employees**.  
+This represents the model’s main strength — ensuring that most critical cases are anticipated, allowing HR teams to take **preventive action**.
+
+2. **Cost of False Alarms (Precision: ~34%)**
+
+To maximise the detection of departures, the model became more sensitive, which led to an **increase in false positives**.  
+A total of **153 employees** were flagged as potential departures, but only **52 actually left** the organisation.  
+Thus, about **two thirds of flagged employees** remained, generating a considerable level of false alerts.  
+While the model is effective at forecasting real departures, it operates in a **“hyper‑vigilant” mode**, which can lead to **unnecessary HR interventions** and resource strain.
+
+3. **Confusion Matrix:**
+
+* **True Negatives (269):** Employees who stayed and were correctly classified.  
+* **False Positives (101):** Employees who stayed but were incorrectly flagged as at risk — potential waste of management resources.  
+* **False Negatives (19):** Employees who left but were not predicted to do so — unanticipated losses.  
+* **True Positives (52):** Employees who left and were correctly identified — opportunities for proactive retention.
+
+**Next Step:**  
+Test a more robust model, such as **Random Forest**, aiming to **reduce the number of false positives** without compromising the good sensitivity achieved by the logistic regression model.
+
+## Model 2: Random Forest
+
+```{r}
+library(randomForest)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(kableExtra)
+
+# Data Preparation and Training
+train_balanced$attrition <- as.factor(train_balanced$attrition)
+test_data$attrition <- as.factor(test_data$attrition)
+
+set.seed(123)
+rf_model <- randomForest(attrition ~ ., 
+                         data = train_balanced, 
+                         ntree = 500, 
+                         importance = TRUE)
+
+# Predictions and Metrics
+rf_predictions <- predict(rf_model, newdata = test_data)
+rf_conf_matrix <- confusionMatrix(data = rf_predictions, 
+                                  reference = test_data$attrition, 
+                                  positive = "1")
+
+# Variable Importance Plot
+imp_df <- as.data.frame(importance(rf_model))
+imp_df$Variable <- rownames(imp_df)
+
+ggplot(imp_df %>% arrange(desc(MeanDecreaseAccuracy)) %>% head(15), 
+       aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#2C3E50", alpha = 0.9, width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Top 15 Predictors of Employee Attrition",
+    subtitle = "Factors that most influence the decision to leave",
+    x = NULL,
+    y = "Importance (Mean Decrease Accuracy)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    panel.grid.major.y = element_blank()
+  )
+
+# Comparative Performance Table
+rf_metrics <- data.frame(
+  Metric = c("Accuracy", "Sensitivity (Recall)", "Specificity"),
+  Result = c(
+    paste0(round(rf_conf_matrix$overall['Accuracy'] * 100, 2), "%"),
+    paste0(round(rf_conf_matrix$byClass['Sensitivity'] * 100, 2), "%"),
+    paste0(round(rf_conf_matrix$byClass['Specificity'] * 100, 2), "%")
+  )
+)
+
+rf_metrics %>%
+  kable(caption = "Performance of the Random Forest Model") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#2c3e50")
+```
+
+The **Random Forest** model delivered **superior and more balanced performance** compared with Logistic Regression.  
+With an **overall accuracy of 74.15%**, this algorithm proved to be a robust and reliable tool to support **strategic talent retention decisions**.
+
+1. **Balance between detection and precision**  
+Unlike the previous model, Random Forest was **more precise** in distinguishing between risk and stability profiles.
+
+* **Sensitivity (_Recall_) of 70.4%** – It correctly identified **50 of the 71 employees** who actually left the company.  
+
+* **Reduction of false positives** – Although some false alerts remain, the model was **more selective** in identifying risk, reducing operational noise for HR teams.  
+
+This balance results in a more **“surgical” tool**, capable of achieving a high detection capability without significantly sacrificing predictive precision.
+
+---
+
+2. **Main predictors of attrition**  
+The variable importance analysis highlights the factors most strongly influencing the decision to leave, providing highly valuable management insights:
+
+* **`OverTime` (Overtime Work):** Emerges as the most powerful predictor, indicating that employees exposed to long working hours are significantly more likely to leave.  
+* **`MonthlyIncome` (Salary):** Confirms that lower salary ranges represent the most vulnerable zone in terms of attrition risk.  
+* **`StockOptionLevel`:** The absence of long‑term incentives (e.g., stock plans) is linked to weaker organisational commitment.  
+* **`Age` and `TotalWorkingYears`:** Younger employees and those with fewer years of experience show greater external mobility.  
+
+These findings align with HR research, emphasising the combined influence of **financial factors, workload, and professional experience** as key determinants of employee attrition.
+
+---
+
+3. **Technical and interpretative conclusion**  
+The Random Forest model was able to **capture non‑linear interactions and complex patterns** that linear models could not represent.  
+For instance, the algorithm identified that an **average salary may be acceptable in isolation**, but becomes a **risk factor when combined with excessive overtime or low satisfaction with management**.  
+
+In short, this model not only enhances predictive performance but also provides **actionable insights** for **targeted retention policies** and **proactive talent management strategies**.
+
+## Attrition Drivers Analysis (Feature Importance)
+
+```{r}
+# Extract variable importance from the Random Forest model
+importance_df <- as.data.frame(importance(rf_model))
+importance_df$Variable <- rownames(importance_df)
+
+# Create the plot
+library(ggplot2)
+library(dplyr)
+
+ggplot(importance_df %>% arrange(desc(MeanDecreaseAccuracy)) %>% head(15), 
+       aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#2C3E50", alpha = 0.9, width = 0.7) +
+  geom_text(aes(label = round(MeanDecreaseAccuracy, 1)), 
+            hjust = -0.2, size = 3, fontface = "bold", color = "#2C3E50") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Critical Attrition Drivers",
+    subtitle = "Variables that most impact the accuracy of the Random Forest model",
+    x = NULL,
+    y = "Importance (Mean Decrease Accuracy)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    plot.subtitle = element_text(size = 11, color = "grey40"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 10)
+  )
+```
+
+The chart above presents the most influential variables identified by the Random Forest model, ranked according to the **“Mean Decrease Accuracy”** metric.  
+In practical terms, the higher the importance of this metric, the greater the variable’s contribution to the model’s overall predictive capability—its removal would result in a significant drop in accuracy.
+
+1. **Job Role as the main determinant (`JobRole`)**  
+Four of the top five most relevant variables relate to specific functions within the organisation.  
+Two extremes stand out: `Research Director` (a highly stable position) and `Sales Representative` (a considerably more volatile one).  
+
+This difference confirms the conclusions drawn from the exploratory stage: **hierarchical level** and **job type** are key factors driving attrition behaviour across the company.  
+
+**Implication:** Generic people‑management policies (“one‑size‑fits‑all”) are ineffective.  
+Retention strategies must be **function‑specific**, acknowledging that sales and research/leadership teams require distinct approaches to motivation and recognition.
+
+2. **The weight of overtime (`OverTime`)**  
+The variable `over_time_yes` ranks as the **third most critical predictor** across the dataset.  
+This supports prior evidence showing that **work overload** and **poor work‑life balance** are direct triggers of attrition.  
+This is less a question of compensation and more one of **organisational well‑being and burnout prevention**.
+
+3. **Stagnation and long‑term incentives**  
+
+* **Stagnation:** The variable `years_in_current_role` (years in current position) ranks sixth in importance. Prolonged permanence in the same role without visible career progression markedly increases voluntary attrition risk.  
+* **Incentives:** `stock_option_level` follows closely, highlighting that **long‑term incentives** have a stronger retention effect than monthly income (`monthly_income`), which only appears in fifteenth position.  
+
+These findings suggest that **career progression** and **symbolic capital appreciation** (e.g., ownership incentives, recognition, visibility) are more effective retention mechanisms than salary increases alone.
+
+4. **Demographic risk profile**  
+The presence of the variables `marital_status_single` and `age` within the top 15 reaffirms the previously observed pattern: **younger and single employees** are more mobile and more prone to job changes, particularly when development opportunities are limited.
+
+To mitigate **attrition risks**, the company should prioritise three strategic action areas:
+
+1. **Reassess conditions and incentives for Sales teams**, where turnover is highest;  
+2. **Monitor and regulate overtime**, encouraging initiatives that promote work‑life balance and overall well‑being;  
+3. **Implement career‑rotation and development programmes**, particularly for employees who have remained in the same position for several years.
+
+These strategic actions align directly with the model results and can **substantially reduce unwanted turnover**, thereby strengthening the retention of critical talent.
+
+---
+
+# Conclusion and Business Recommendations
+
+The purpose of this project was to **identify the key drivers of employee attrition** and to **build a predictive model to mitigate turnover risk**.
+
+## Model Comparison
+Two modelling approaches were evaluated: **Logistic Regression** and **Random Forest**.
+
+The **Random Forest** algorithm demonstrated **superior and more stable performance**, achieving an **overall accuracy of 74.15%**.  
+The model correctly identified **70.4% of employees who actually left** (sensitivity) while maintaining a **controlled false‑positive rate** (specificity of 74.9%).
+
+These metrics reveal an **appropriate balance between detection and precision**, making the algorithm a reliable and practical tool for HR decision‑making contexts.
+
+---
+
+## Key Attrition Drivers (_Model Insights_)
+The feature‑importance analysis revealed three **core pillars for action**:
+
+1. **Risk Associated with Sales Roles**  
+The `Sales Representative` role emerged as the **strongest predictor of departure**. Turnover in this function is substantially higher than in stable roles such as `Research Director` or `Manager`.  
+**Likely diagnosis:** commission scheme imbalances, excessive target pressure, or limited advancement opportunities.
+
+2. **Overtime Culture and Occupational Fatigue**  
+The `OverTime` variable remains among the **top three most critical factors**, demonstrating that **work overload** is a direct **attrition trigger**.  
+Employees who work overtime show markedly higher turnover likelihood, regardless of salary level.  
+**Interpretation:** This pattern indicates possible signs of **burnout** and **work‑life imbalance**, areas that require continuous HR monitoring.
+
+3. **Retention Through Long‑Term Incentives**  
+`StockOptionLevel` proves to be **a key driver of talent retention**.  
+Employees with stock participation or long‑term incentives tend to stay longer, driven by a stronger sense of ownership and organisational commitment.  
+Conversely, the absence of these mechanisms correlates with a higher turnover propensity.
+
+---
+
+## Recommended Action Plan (Next Steps)
+
+Based on the analytical findings, the following measures are recommended:
+
+1. **Targeted Intervention in Sales Teams:**  
+   Conduct **exit interviews** focusing specifically on Sales Representatives to reassess commission structures, target systems, and career development opportunities.  
+
+2. **Working‑Hours and Well‑Being Audit:**  
+   Implement **mechanisms to monitor and compensate overtime work** (through time‑off or benefits).  
+   In parallel, develop **burnout prevention and work‑life balance initiatives**.  
+
+3. **Continuous Attrition Prediction Tool:**  
+   Deploy the Random Forest model as a **monthly predictive‑monitoring system** — a dynamic *“risk list”* highlighting employees with a **probability of departure above 50%**.  
+   HR teams should use this information **proactively**, engaging with at‑risk employees before the decision to leave occurs.
