@@ -11,6 +11,19 @@ To go beyond mere prediction and extract **actionable business insights** that h
 
 ---
 
+## 🌐 Interactive Reports
+
+📊 **Full interactive HTML reports available on RPubs:**
+
+- 🇵🇹 [View report in Portuguese](http://rpubs.com/inaciojoana00/1387121)  
+- 🇬🇧 [View report in English](http://rpubs.com/inaciojoana00/1387160)
+
+---
+
+👩💻 **Author:** [Joana Inácio](https://www.linkedin.com/in/joanainacio000/)
+
+---
+
 ## Dataset
 
 - **Source:** IBM HR Analytics Employee Attrition & Performance (Kaggle)  
@@ -78,10 +91,3 @@ To reproduce the report:
 ```r
 rmarkdown::render("HR_Attrition_Project.Rmd")
 ```
-
----
-
-📎 **Full interactive HTML report:**
-👉 (View on RPubs) http://rpubs.com/inaciojoana00/1387121
-
-👩💻 **Author:** https://www.linkedin.com/in/joanainacio000/
