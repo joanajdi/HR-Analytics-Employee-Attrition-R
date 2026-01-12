@@ -81,6 +81,7 @@ rmarkdown::render("HR_Attrition_Project.Rmd")
 
 ---
 
-📎 **Full Report (HTML):** [link-to-your-HTML-after-upload]
+📎 **Full interactive HTML report:**
+👉 (View on RPubs) http://rpubs.com/inaciojoana00/1387121
 
 👩💻 **Author:** https://www.linkedin.com/in/joanainacio000/
