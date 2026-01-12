@@ -1,0 +1,1072 @@
+---
+title: "Análise de Rotatividade (HR Analytics)"
+subtitle: "Identificação de Fatores Críticos para a Retenção de Talento"
+author: "Joana Inácio | Data Analyst"
+date: "`r format(Sys.Date(), '%d-%m-%Y')`"
+output:
+  html_document:
+    code_folding: hide
+    theme: cosmo           
+    highlight: pygments   
+    toc: true
+    toc_float: true
+    code_download: true    
+    number_sections: false 
+---
+```{r setup, include=FALSE}
+# Manipulação e limpeza de dados
+library(dplyr)
+library(janitor)
+library(fastDummies)
+library(skimr)
+
+# Visualização
+library(ggplot2)
+library(corrplot)
+library(gridExtra)
+library(kableExtra)
+
+# Modelação e avaliação
+library(caTools)
+library(ROSE)
+library(randomForest)
+library(caret)
+
+knitr::opts_chunk$set(
+  echo = TRUE, # Mostra o código no relatório (TRUE) ou esconde (FALSE)
+  warning = FALSE, # Esconde mensagens de aviso 
+  message = FALSE, # Esconde mensagens normais
+  fig.align = "center", # Centra todos os gráficos
+  fig.width = 10, # É a largura padrão para os outputs
+  fig.height = 6, # É a altura padrão para os outputs
+  comment = NA, # Remove os "##" das linhas de output de código
+  out.width = "80%" # A largura das figuras terá 80% da largura da página
+)
+```
+# Introdução e Contexto
+## O Problema de Negócio
+A rotatividade dos funcionários (também conhecida por _Employee Attrition_) é um dos maiores desafios das organizações, e um dos que traz mais custos. Estudos indicam que o custo de substituir um funcionário pode variar entre 50% a 200% do seu salário anual, sendo considerados os custos de recrutamento, de formação e de perda de produtividade.
+
+Para além do impacto financeiro, uma taxa de _turnover_ elevada afeta a moral das equipas, a cultura da empresa e a continuidade dos projetos. Por isso, a capacidade de prever **quem** está em risco de sair e, mais importante, **porquê**, é uma vantagem competitiva crucial para o Departamento de Recursos Humanos (RH). 
+
+## Sobre o _Dataset_
+Neste projeto, foi utilizado o _dataset_ "**IBM HR Analytics Employee Attrition & Performance**", disponibilizado publicamente no Kaggle. Este conjunto de dados foi criado por cientistas de dados da IBM e, embora seja fictício, reflete desafios reais do mundo corporativo.
+
+O _dataset_ contém **1470 observações** (funcionários) e **35 variáveis** (características) 
+
+## Dicionário de Variáveis
+A nossa variável-alvo (_Target_) é a **_Attrition_**, que indica se o funcionário saiu ("Yes") ou permaneceu ("No") na empresa. 
+
+As restantes variáveis podem ser agrupadas em três categorias principais que iremos explorar:
+
+1. **Demográficas**: `Age`, `Gender`, `MaritialStatus`, `DistanceFromHome`;
+
+2. **Dados do Trabalho**: `Department`, `JobRole`, `JobLevel`, `OverTime`, `BusinessTravel`;
+
+3. **Compensação e Satisfação**: `MonthlyIncome`, `PercentSalaryHike`, `StockOptionLevel`, `JobSatisfaction`, `EnvironmentSatisfaction`. 
+
+Para facilitar a leitura, foram destacadas acima apenas as variáveis mais relevantes para a análise. A lista completa das 35 variáveis e os seus tipos de dados serão apresentados na secção técnica de inspeção de dados.
+
+## Objetivos do Projeto
+
+O objetivo central deste projeto é desenvolver uma solução de **People Analytics** capaz de antecipar a rotatividade de talentos e fornecer à gestão estratégias baseadas em dados. Para tal, a análise foca-se em três pilares verticais:
+
+* **Diagnóstico de Causa Raiz**: Quantificar o impacto real de fatores de risco, verificando a hipótese de que a sobrecarga de trabalho (`OverTime`) e a logística (`DistanceFromHome`) são catalisadores de _burnout_.
+
+* **Hierarquia de Retenção**: Determinar, através de algoritmos de Machine Learning, o que pesa mais na decisão de saída: incentivos financeiros (`MonthlyIncome`) ou fatores intangíveis como a Satisfação no Trabalho.
+
+* **Modelação Preditiva**: Treinar algoritmos de classificação (Regressão Logística e Random Forest) para identificar colaboradores em risco com elevada precisão, permitindo uma atuação preventiva do RH.
+
+# Importação dos Dados e Inspeção Inicial
+
+```{r importacao, message=FALSE, warning=FALSE}
+# Importação dos Dados
+# Lemos o ficheiro original
+ibm_hr <- read.csv("data/WA_Fn-UseC_-HR-Employee-Attrition.csv", sep = ";")
+
+
+library(janitor)
+library(dplyr)
+
+# Limpeza e Padronização
+# Aqui criamos o objeto 'ibm_clean'
+
+ibm_clean <- ibm_hr %>% 
+  clean_names() %>% 
+  # Removemos colunas que não variam
+  select(-any_of(c("employee_count", "over18", "standard_hours", "employee_number")))
+
+# Visualização (kable)
+library(kableExtra)
+ibm_clean %>% 
+  select(age, attrition, monthly_income, job_role, over_time, total_working_years) %>% 
+  head(10) %>% 
+  kable(caption = "Tabela 1: Amostra das Variáveis Críticas para Análise de Rotatividade") %>% 
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = T, 
+                position = "center") %>% 
+  row_spec(0, bold = T, color = "white", background = "#2c3e50") 
+```
+
+A base de dados é composta por **35 variáveis** que abrangem três dimensões centrais: **características demográficas**, **fatores financeiros** e **indicadores de desempenho profissional**.
+
+Nesta fase inicial, a análise incide sobre variáveis com maior potencial explicativo da **rotatividade de colaboradores**, nomeadamente a **remuneração mensal**, os anos totais de **antiguidade na empresa** e a realização de **horas extra**.
+
+Evidências empíricas e análises preliminares apontam para uma relação significativa entre estes fatores e a **probabilidade de saída dos colaboradores**, constituindo, por isso, pontos de partida fundamentais para o aprofundamento da análise.
+
+# Tratamento de Dados
+## Limpeza de Dados
+A análise descritiva inicial, evidenciou dois aspetos relevantes relativamente à qualidade e estrutura do conjunto de dados:
+
+1. **Qualidade dos dados** – Verificou-se a inexistência de valores em falta (_missing values_) em todas as variáveis, o que simplifica substancialmente as etapas de pré-processamento.
+
+2. **Variáveis redundantes e não informativas** – Foram identificadas três variáveis com valor constante em todas as observações (desvio padrão = 0), bem como uma variável de identificação individual. Por não apresentarem variabilidade ou não contribuírem para a explicação do fenómeno estudado, estas variáveis foram removidas do _dataset_.
+
+As **variáveis eliminadas** foram:
+
+* `EmployeeCount`: valor constante igual a “1”;
+
+* `Over18`: todos os colaboradores registados como maiores de idade (“Y”);
+
+* `StandardHours`: valor fixo de “80” em todos os registos;
+
+* `EmployeeNumber`: identificador único dos colaboradores, sem relevância preditiva.
+
+A exclusão destas variáveis permite reduzir a dimensionalidade dos dados sem perda de informação relevante, contribuindo para um modelo analítico mais eficiente e interpretável.
+
+```{r limpeza_especifica, message=FALSE}
+# Padronização de Nomes
+ibm_clean <- ibm_hr %>% 
+  clean_names()
+
+# Remover Variáveis Invariantes
+colunas_remover <- c("employee_count", "over18", "standard_hours", "employee_number")
+
+ibm_clean <- ibm_clean %>% 
+  select(-any_of(colunas_remover))
+
+# Resumo da Limpeza
+cat("Base de dados limpa com sucesso.\n",
+    "Total de Colunas Originais: ", ncol(ibm_hr), "\n",
+    "Total de Colunas Após Limpeza: ", ncol(ibm_clean))
+```
+
+# Análise Exploratória dos Dados (AED)
+Esta fase tem como principal objetivo compreender a distribuição das variáveis e identificar padrões ou relações que possam explicar o fenómeno da **rotatividade de colaboradores** (_employee attrition_).
+
+Inicia-se a exploração pela variável alvo, `Attrition`, que indica se o colaborador **permaneceu na empresa** (`No`) ou **optou pela saída** (`Yes`).
+
+A análise desta variável fornece uma primeira perceção acerca do equilíbrio entre colaboradores ativos e aqueles que deixaram a organização, permitindo avaliar a dimensão real do fenómeno de saída.
+
+## Análise da Variável _Target_ (_Attrition_)
+Quantos funcionários efetivamente saíram da empresa?
+
+```{r analise_targe}
+# Criar a Tabela de Frequência Profissional
+tabela_target <- ibm_clean %>%
+  count(attrition) %>%
+  mutate(
+    percentagem = (n / sum(n)) * 100,
+    attrition = ifelse(attrition == "Yes", "Saiu (Yes)", "Permaneceu (No)")
+  )
+
+# Exibir Tabela com o kableExtra
+tabela_target %>%
+  kable(
+    caption = "Distribuição da Variável-Target (Attrition)",
+    col.names = c("Status", "Total (n)", "Percentagem (%)"),
+    digits = 1
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50") %>%
+  column_spec(3, bold = T, color = ifelse(tabela_target$percentagem < 20, "#e74c3c", "#2c3e50"))
+
+# Visualização
+ggplot(ibm_clean, aes(x = attrition, fill = attrition)) +
+  geom_bar(width = 0.6, alpha = 0.9) +
+ 
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Visão Geral da Rotatividade na Empresa",
+    subtitle = "Apenas 16% dos colaboradores deixaram a organização no período analisado",
+    x = "Decisão de Saída",
+    y = "Número de Funcionários"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    panel.grid.major.x = element_blank() 
+  )
+```
+**_Insight_ Inicial**: 
+Verifica-se que a **taxa de rotatividade** (_Attrition Rate_) é de aproximadamente **16%**, o que indica que a maioria dos colaboradores (cerca de 84%) permaneceu na empresa durante o período analisado.
+
+Observa-se, assim, um **desequilíbrio entre as classes** da variável alvo, com predominância de colaboradores que não saíram da organização.
+
+Este ponto é particularmente relevante para etapas posteriores de **modelação preditiva**, uma vez que a desproporção entre classes pode levar o modelo a **sobrevalorizar a classe maioritária** (colaboradores que ficam) e negligenciar os casos de saída, que são precisamente os que mais interessam compreender e prever.
+
+## Análise Demográfica: A Idade Influencia?
+Vamos analisar a distribuição de idade entre os funcionários que saíram e os que ficaram. Utilizamos um Boxplot para visualizar a mediana e a dispersão dos dados.
+
+```{r analise_idade}
+# Gráfico: Distribuição de Idade por Rotatividade
+ggplot(ibm_clean, aes(x = attrition, y = age, fill = attrition)) +
+  geom_jitter(alpha = 0.2, color = "grey40", width = 0.2) +
+  geom_boxplot(alpha = 0.8, outlier.colour = "red", width = 0.5) +
+  
+  # Cores consistentes com o resto do relatório
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  labs(
+    title = "O Fator Idade na Retenção de Talento",
+    subtitle = "Colaboradores que saem (Yes) apresentam uma mediana de idade visivelmente inferior",
+    x = "Decisão de Saída",
+    y = "Idade (Anos)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    panel.grid.major.x = element_blank(),
+    axis.title = element_text(face = "bold")
+  )
+```
+
+**_Insights_ sobre a Idade:**
+
+A análise do boxplot evidencia uma tendência clara na relação entre **idade** e **rotatividade de colaboradores**:
+
+1. **Fator Juventude** – Verifica-se uma tendência segundo a qual os colaboradores mais jovens apresentam uma **maior propensão para sair da empresa**. A mediana de idade dos funcionários que saem é visivelmente inferior à dos que permanecem.
+
+2. **Zona de Risco** – A maior concentração de saídas situa-se entre os **25 e os 35 anos**, faixa etária frequentemente associada a **mobilidade profissional** e **procura de progressão na carreira**. Este comportamento pode refletir desafios da organização em **reter talento jovem** ou em oferecer **planos de desenvolvimento estruturados**.
+
+3. **Estabilidade Sénior** – Colaboradores com **mais de 40 anos** apresentam **maior estabilidade** e **menor probabilidade de saída**. As poucas ocorrências nesta faixa etária surgem como _outliers_ no gráfico, sugerindo casos pontuais de saída da empresa (por exemplo, reforma, mudança pessoal ou reestruturação interna).
+
+**Conclusão**: Os resultados sugerem a necessidade de uma **estratégia de retenção segmentada**:
+
+* **Colaboradores júniores e intermédios** (25-35 anos) devem ser alvo de ações focadas em _engagement_, progressão interna e gestão de expectativas de carreira;
+
+* Já para os **colaboradores séniores**, o foco poderá ser reconhecimento, mentoria e transmissão de _know-how_, reforçando o sentimento de pertença e continuidade organizacional.
+
+```{r analise_estado_civil}
+# Gráfico de Barras: Proporção de Saída por Estado Civil
+ggplot(ibm_clean, aes(x = marital_status, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  # Formatação do eixo Y para percentagem
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  
+  labs(
+    title = "Impacto do Estado Civil na Retenção",
+    subtitle = "Colaboradores solteiros apresentam uma taxa de saída significativamente superior",
+    x = "Estado Civil",
+    y = "Proporção de Funcionários",
+    fill = "Saída?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    legend.position = "top", 
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold") 
+  )
+```
+**_Insights_ sobre o Estado Civil:**
+
+A análise sugere que o **estado civil** constitui um **fator relevante na rotatividade de colaboradores**:
+
+1. **Maior risco entre colaboradores solteiros** – Os trabalhadores solteiros registam uma **taxa de saída superior a 25%**, mais do dobro da observada entre colaboradores casados ou divorciados (aproximadamente 11%). Este resultado indica que a probabilidade de saída está significativamente associada ao estado civil.
+
+2. **Possível explicação comportamental** – Este padrão é consistente com evidência empírica na literatura de recursos humanos, que aponta que profissionais sem dependentes ou laços familiares diretos tendem a apresentar maior mobilidade laboral. Essa flexibilidade geográfica e financeira pode facilitar a procura de novas oportunidades ou a aceitação de propostas em diferentes locais.
+
+**Conclusão**: A gestão de talento poderá beneficiar de **estratégias diferenciadas de retenção** entre grupos, promovendo, por exemplo, iniciativas de progressão de carreira e programas de envolvimento organizacional que aumentem o compromisso dos colaboradores mais jovens e solteiros com a empresa.
+
+## Análise Profissional: Carga de Trabalho e Viagens
+
+Será que o excesso de trabalho (`OverTime`) e as viagens frequentes (`BusinessTravel`) levam à exaustão e consequente saída?
+
+```{r analise_carga_trabalho}
+# Gráfico de Horas Extra (p1)
+p1 <- ggplot(ibm_clean, aes(x = over_time, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impacto das Horas Extra", 
+    x = "Faz Horas Extra?", 
+    y = "Proporção"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank()
+  )
+
+# Gráfico de Viagens de Trabalho (p2)
+p2 <- ggplot(ibm_clean, aes(x = business_travel, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impacto das Viagens", 
+    x = "Frequência de Viagens", 
+    y = NULL,
+    fill = "Saída?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank()
+  )
+
+# Juntar as duas visualizações
+library(gridExtra)
+grid.arrange(p1, p2, ncol = 2, top = grid::textGrob("Análise de Carga de Trabalho e Mobilidade", 
+                                                   gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+**_Insights_ sobre Carga de Trabalho e Estilo de Vida:**
+
+A análise da carga de trabalho e da mobilidade profissional revela uma associação evidente entre exaustão e rotatividade de colaboradores:
+
+1. **Impacto das Horas Extra** – O efeito das horas extra é particularmente expressivo. Colaboradores que não realizam horas extra apresentam uma taxa de saída próxima de 10%, enquanto entre os que trabalham além do horário regular, essa proporção triplica para cerca de 30%.
+Este resultado constitui um indicador claro de risco de _burnout_ e sugere que o excesso de carga horária pode estar associado à insatisfação e desgaste emocional.
+
+2. **O Peso da Mobilidade** (`BusinessTrave`l) – Observa-se uma tendência crescente entre frequência de viagens e probabilidade de saída:
+
+* Colaboradores que **não viajam** (`Non‑Travel`) apresentam a menor taxa de rotatividade (<10%);
+
+* Entre os que **viajam com frequência** (`Travel_Frequently`), o risco aproxima‑se dos 25%, indicando que o equilíbrio entre vida pessoal e profissional se encontra consideravelmente comprometido.
+
+**Conclusão**: Tanto a sobrecarga de trabalho como a mobilidade excessiva surgem como fatores de risco relevantes para a retenção de talento. Políticas organizacionais que promovam limites saudáveis de jornada, flexibilidade laboral e equilíbrio vida‑trabalho poderão mitigar significativamente este tipo de rotatividade.
+
+## Análise Financeira: O Salário Importa?
+Foi analisada a distribuição salarial (`MonthlyIncome`) para entender se salários mais baixos impulsionam a saída.
+
+```{r analise_salario}
+# Gráfico de Densidade: Salário Mensal por Rotatividade
+ggplot(ibm_clean, aes(x = monthly_income, fill = attrition)) +
+  geom_density(alpha = 0.7, color = "white") +
+  
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  
+  # Formatação do eixo X para Moeda (Dólar)
+  scale_x_continuous(labels = scales::dollar_format(), breaks = seq(0, 20000, 2500)) +
+  
+  labs(
+    title = "Distribuição Salarial e o Risco de Rotatividade",
+    subtitle = "A probabilidade de saída é drasticamente superior em faixas salariais abaixo dos $5.000",
+    x = "Salário Mensal (USD)",
+    y = "Densidade de Colaboradores",
+    fill = "Status de Saída"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    legend.position = "top",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+```
+
+**_Insights_ Financeiros:**
+
+A análise da distribuição salarial evidencia que a **remuneração é um fator determinante** na probabilidade de saída, apresentando um padrão bastante distinto entre as faixas de rendimento:
+
+1. **A barreira dos 5000$** – Observa‑se uma concentração significativa de saídas entre colaboradores com salários mensais inferiores a 5000$ Nesta faixa, a densidade de casos de _attrition_ é substancialmente superior, sugerindo que níveis salariais mais baixos estão associados a uma maior volatilidade da força de trabalho.
+
+2. **Retenção em faixas salariais elevadas** – À medida que o salário aumenta (particularmente acima dos 10000$), a probabilidade de saída reduz drasticamente. Entre os colaboradores com rendimentos mais altos, a curva de densidade associada à permanência é claramente predominante, indicando maior estabilidade e satisfação profissional.
+
+**Conclusão**: O padrão observado sugere que a empresa enfrenta maiores desafios de retenção entre colaboradores de nível operacional e funções júniores, onde a compensação pode não estar alinhada com as expectativas do mercado. Estratégias salariais mais competitivas, complementadas por planos de progressão e valorização interna, poderão ser decisivas para reduzir a rotatividade nestas faixas salariais.
+
+## Análise de Função e Satisfação
+Antes de avançarmos para as correlações numéricas, falta analisar duas variáveis categóricas cruciais: o Cargo (`JobRole`) e a Satisfação no Trabalho (`JobSatisfaction`).
+
+O objetivo é identificar se existem cargos específicos com maior rotatividade.
+
+```{r analise_cargo_satisfacao}
+# Rotatividade por Cargo
+p_role <- ggplot(ibm_clean, aes(y = reorder(job_role, (attrition == "Yes")), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.7, alpha = 0.9) +
+  scale_x_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Rotatividade por Cargo",
+    subtitle = "Vendas, RH e Técnicos de Laboratório apresentam maior risco",
+    y = NULL,
+    x = "Proporção de Saída"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(size = 9, face = "bold")
+  )
+
+# Impacto da Satisfação
+p_sat <- ggplot(ibm_clean, aes(x = factor(job_satisfaction), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Impacto da Satisfação no Trabalho",
+    subtitle = "Níveis baixos de satisfação (1 e 2) correlacionam-se com maior churn",
+    x = "Nível de Satisfação (1: Baixa → 4: Alta)",
+    y = "Proporção",
+    fill = "Saída?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    legend.position = "right",
+    panel.grid.major.x = element_blank()
+  )
+
+library(gridExtra)
+grid.arrange(p_role, p_sat, nrow = 2, 
+             top = grid::textGrob("Análise de Função e Sentimento", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+**_Insights_ sobre Função e Satisfação:**
+
+A análise evidencia **padrões distintos de rotatividade por função**, revelando áreas críticas dentro da organização:
+
+1. **Funções de Vendas (_Sales Representatives_)** – Este grupo apresenta a maior taxa de saída, próxima dos 40%, o que é indicativo de pressão comercial elevada, objetivos exigentes ou sistemas de incentivos pouco atrativos. Trata‑se de um foco prioritário de atuação, dada a importância estratégica destas funções para o desempenho global da empresa.
+
+2. **Técnicos de Laboratório e Recursos Humanos** – Ambas as funções registam taxas de saída em torno dos 25%, claramente acima da média organizacional. 
+
+3. **Retenção nas funções de liderança** – Os cargos de gestão e direção (_Managers_ e _Directors_) apresentam níveis de estabilidade muito elevados, o que sugere que a rotatividade é predominantemente um fenómeno dos níveis hierárquicos intermédios e operacionais. Este padrão revela a importância de direcionar as estratégias de retenção e desenvolvimento para as funções mais vulneráveis.
+
+**Conclusão**: A rotatividade parece concentrar‑se em posições de base e funções de suporte operacional, exigindo políticas focadas em melhoria do clima organizacional, revisão de incentivos e oportunidades de progressão, por forma a fortalecer o compromisso e a retenção nestes grupos.
+
+## Análise da Antiguidade e Tempo de Deslocação 
+Foi investigada a antiguidade na empresa (`YearsAtCompany`) e a distância de casa (`DistanceFromHome`).
+O objetivo é entender se perdemos talento recém-contratado e se o trajeto diário influencia a decisão.
+
+```{r analise_antiguidade_distancia}
+# Gráfico de Antiguidade (Anos na Empresa)
+p_years <- ggplot(ibm_clean, aes(x = years_at_company, fill = attrition)) +
+  geom_density(alpha = 0.7, color = "white") +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Ciclo de Vida: Antiguidade na Empresa",
+    subtitle = "O risco de 'churn' é crítico nos primeiros 2 anos (período de onboarding)",
+    x = "Anos na Empresa",
+    y = "Densidade"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.minor = element_blank()
+  )
+
+# Gráfico de Distância (Boxplot)
+p_dist <- ggplot(ibm_clean, aes(x = attrition, y = distance_from_home, fill = attrition)) +
+  geom_boxplot(alpha = 0.8, width = 0.6, outlier.colour = "#E74C3C") +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Logística: Distância Casa-Trabalho",
+    subtitle = "Colaboradores que saem tendem a percorrer distâncias maiores",
+    x = "Decisão de Saída",
+    y = "Distância (km/milhas)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank()
+  )
+
+# Organizar os gráficos
+library(gridExtra)
+grid.arrange(p_years, p_dist, nrow = 2, 
+             top = grid::textGrob("Análise de Retenção e Logística", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+**_Insights_ de Tempo e Logística:**
+
+A análise evidencia pontos críticos no ciclo de vida do colaborador, com implicações diretas para a retenção e o desempenho organizacional:
+
+1. **Fase de _Onboarding_ - Risco de saída precoce**: O gráfico de antiguidade mostra um pico acentuado de rotatividade nos primeiros dois anos de vínculo, precisamente durante o período de integração e adaptação. Este resultado sugere fragilidades nos processos de acolhimento, acompanhamento inicial ou alinhamento de expectativas entre o colaborador e a organização. Investir em programas estruturados de _onboarding_ e mentoria poderá reduzir substancialmente este tipo de perda prematura de talento.
+
+2. **Custo da Deslocação – Fator logístico de desgaste**: O boxplot de distâncias casa‑trabalho indica que os colaboradores que saem tendem a percorrer trajetos mais longos, o que aponta para um potencial impacto negativo do tempo e esforço de deslocação na satisfação geral. O desgaste associado ao _commuting_ diário, quando combinado com elevadas cargas de trabalho, aumenta a probabilidade de saída voluntária. Medidas como teletrabalho híbrido, adaptação de horários ou incentivos de transporte podem mitigar esse efeito.
+
+**Conclusão**: A retenção eficaz exige uma abordagem holística que abranja tanto a experiência inicial do colaborador (_onboarding_) como a sustentabilidade logística da sua rotina laboral. Estas duas dimensões revelam‑se determinantes para consolidar o compromisso organizacional nos primeiros anos de vínculo.
+
+## Análise do Género e Work-Life Balance
+```{r analise_genero_w}
+# Rotatividade por Género (p_gen)
+p_gen <- ggplot(ibm_clean, aes(x = gender, fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Rotatividade por Género", 
+    subtitle = "Existe disparidade entre homens e mulheres?",
+    x = NULL, 
+    y = "Proporção"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none", # Escondemos a legenda aqui para não repetir
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+# Análise do Work-Life Balance (p_wlb)
+p_wlb <- ggplot(ibm_clean, aes(x = factor(work_life_balance), fill = attrition)) +
+  geom_bar(position = "fill", width = 0.6, alpha = 0.9) +
+  scale_y_continuous(labels = scales::percent_format(), expand = c(0,0)) +
+  scale_fill_manual(values = c("No" = "#2C3E50", "Yes" = "#E74C3C")) +
+  labs(
+    title = "Equilíbrio Vida-Trabalho", 
+    subtitle = "O impacto do equilíbrio na decisão de saída",
+    x = "Nível (1: Mau → 4: Excelente)", 
+    y = NULL,
+    fill = "Saída?"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 13, color = "#2c3e50"),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+# Juntar os dois lado a lado
+library(gridExtra)
+grid.arrange(p_gen, p_wlb, ncol = 2, 
+             top = grid::textGrob("Bem-Estar e Diversidade", 
+                                  gp = grid::gpar(fontsize = 16, font = 2, col = "#2c3e50")))
+```
+**_Insights_ de Género e Bem-Estar:**
+
+Para concluir a análise bivariada, destacam‑se dois fatores de natureza social e comportamental com impacto na rotatividade:
+
+1. **Neutralidade de Género** – A taxa de saída revela‑se relativamente uniforme entre homens e mulheres, situando‑se entre 15% e 17%. Este resultado sugere ausência de enviesamentos ou práticas discriminatórias associadas ao género, bem como equidade na experiência organizacional entre grupos.
+
+2. **Equilíbrio Vida‑Trabalho** – A variável _Work‑Life Balance_ evidencia um “ponto crítico” no nível mais baixo de satisfação. Colaboradores que classificam o seu equilíbrio como “Mau” (Nível 1) apresentam uma taxa de rotatividade próxima de 30%, o dobro da verificada nos restantes níveis.
+A melhoria do equilíbrio vida‑trabalho, mesmo que apenas de Nível 1 para Nível 2, já produz uma redução substancial na taxa de saída. Isto indica que intervenções pontuais e realistas, como ajustes de horário, políticas de flexibilidade ou reforço do apoio à equipa, podem gerar efeitos imediatos na retenção, sem ser necessário atingir níveis “ideais” de satisfação (Nível 4).
+
+**Conclusão**: Os resultados apontam para uma cultura organizacional relativamente equilibrada em termos de género, mas vulnerável a fatores ligados ao bem‑estar e equilíbrio pessoal‑profissional. Investir em políticas de saúde ocupacional e flexibilidade laboral poderá ter um retorno direto na satisfação e fidelização dos colaboradores.
+    
+# Análise Multivariada (Correlações)
+Nesta etapa, foi analisada a relação entre as variáveis numéricas para identificar multicolinearidade (redundância). Foi utilizada uma matriz de correlação visual.
+```{r}
+
+ibm_numeric <- ibm_clean %>% select(where(is.numeric))
+matriz_cor  <- cor(ibm_numeric, use = "complete.obs")
+
+# Gráfico de correlações
+col_paleta <- colorRampPalette(c("#E74C3C", "#FFFFFF", "#2C3E50"))(200)
+
+corrplot(matriz_cor, 
+         method = "color", 
+         type = "upper", 
+         order = "hclust",         
+         tl.col = "black", 
+         tl.cex = 0.7, 
+         col = col_paleta,         
+         title = "\n Mapa de Correlações Intervariáveis", 
+         mar = c(0,0,2,0),
+         diag = FALSE)
+
+# Tabela de correlações
+tabela_cor <- as.data.frame(as.table(matriz_cor))
+
+tabela_melhorada <- tabela_cor %>%
+  filter(Var1 != Var2) %>%
+  filter(!duplicated(paste0(pmax(as.character(Var1), as.character(Var2)), 
+                            pmin(as.character(Var1), as.character(Var2))))) %>%
+  arrange(desc(abs(Freq))) %>%
+  rename(Variavel_1 = Var1, Variavel_2 = Var2, Correlacao = Freq)
+
+# Melhorar design da tabela
+kable(head(tabela_melhorada, 10), 
+      caption = "Top 10 Correlações Mais Fortes Identificadas", 
+      digits = 2,
+      col.names = c("Variável 1", "Variável 2", "Força da Correlação")) %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = T,           
+    position = "center",      
+    font_size = 14            
+  ) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50") %>%
+  # Destaca em vermelho as correlações que podem causar multicolinearidade (>0.7)
+  column_spec(3, bold = T, 
+              color = ifelse(abs(head(tabela_melhorada$Correlacao, 10)) > 0.7, "#E74C3C", "black"))
+```
+**_Insights_ da Análise de Correlação:**
+
+A matriz e a tabela de correlações evidenciam padrões de multicolinearidade significativos, revelando variáveis fortemente redundantes que exigirão tratamento específico na fase de pré‑processamento dos dados:
+
+
+1. **Redundância entre remuneração e nível hierárquico**: A correlação mais elevada de todo o conjunto é observada entre `MonthlyIncome` e `JobLevel` (r = 0.95).
+
+**Interpretação**: Estas variáveis são, na prática, estatisticamente sobrepostas, pelo que o nível do cargo determina quase totalmente o salário.
+Manter ambas no modelo poderá introduzir instabilidade nos coeficientes e enviesar a importância preditiva. Assim, será recomendável reter apenas uma variável representativa (por exemplo, `JobLevel`).
+
+
+2. **Antiguidade**: Identifica‑se um _cluster_ de variáveis temporais altamente correlacionadas, `YearsAtCompany`, `YearsInCurrentRole` e `YearsWithCurrManager`, com correlações entre 0.71 e 0.77.
+
+**Interpretação**: Funcionários com maior antiguidade tendem a permanecer na mesma função e sob a mesma liderança. Convém, portanto, evitar incluir todas simultaneamente, podendo optar‑se por `YearsAtCompany` ou pela criação de uma variável agregada de “estagnação”, que capture esta dinâmica.
+
+
+3. **Experiência profissional e remuneração**: A variável `TotalWorkingYears` apresenta correlação forte com `JobLevel` (0.78) e `MonthlyIncome` (0.77).
+
+**Interpretação**: O sistema de progressão e compensação da empresa aparenta estar altamente alinhado com a senioridade, valorizando sobretudo a experiência acumulada.
+
+
+4. **Desempenho e recompensas**: A correlação de 0.77 entre `PerformanceRating` e `PercentSalaryHike` confirma que os aumentos salariais estão diretamente associados à avaliação de desempenho anual — uma política típica de meritocracia organizacional.
+
+**Conclusão da Análise Exploratória (EDA)**: A exploração bivariada e correlacional permite concluir que a rotatividade está associada a fatores demográficos e laborais (idade jovem, cargos operacionais, viagens frequentes, salários mais baixos), enquanto no plano técnico destacam‑se relações redundantes entre variáveis de hierarquia, antiguidade e remuneração.
+
+Estas constatações constituem o ponto de partida para o pré‑processamento de dados, onde serão tratadas as correlações excessivas e selecionadas as variáveis mais relevantes para os modelos preditivos.
+
+# Pré-processamento de dados
+## Seleção de variáveis (Feature Selection)
+```{r}
+# Executar a Seleção
+ibm_prep <- ibm_clean %>%
+  select(-job_level) %>%  
+  select(-any_of(c("employee_number", "employee_count", "over18", "standard_hours"))) %>%
+  mutate(attrition = ifelse(attrition == "Yes", 1, 0))
+
+# Criar Tabela de Impacto
+resumo_prep <- data.frame(
+  Etapa = c("Colunas Originais", "Colunas Removidas", "Total Final", "Target (Attrition)"),
+  Valor = c(ncol(ibm_clean), 
+            ncol(ibm_clean) - ncol(ibm_prep), 
+            ncol(ibm_prep), 
+            "Convertido para Binário (0/1)")
+)
+
+resumo_prep %>%
+  kable(caption = "Resumo do Pré-processamento e Feature Selection") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50")
+```
+Após a fase de análise exploratória, procedeu‑se à preparação dos dados para a modelação preditiva.
+
+Esta etapa é fundamental para garantir que o modelo resultante não seja influenciado por ruído estatístico nem por informação redundante, assegurando a robustez e interpretabilidade dos resultados.
+
+Principais decisões nesta fase:
+
+1. **Eliminação de redundância (multicolinearidade)** – Conforme identificado na matriz de correlações, as variáveis `monthly_income` e `job_level` apresentavam uma correlação de 0,95. Para evitar sobreajuste (_overfitting_) e simplificar o modelo, decidiu‑se manter apenas a variável mais representativa, privilegiando o impacto financeiro direto.
+
+2. **Conversão da variável‑alvo** – A variável `attrition` foi transformada para formato binário (0/1), de modo a permitir a aplicação de modelos de classificação supervisionada e facilitar a análise de desempenho preditivo.
+
+Estas operações asseguram que o conjunto de dados final esteja estatisticamente equilibrado, computacionalmente eficiente e adequado à fase seguinte de modelação.
+
+## Criação de Dummies
+```{r}
+library(fastDummies)
+
+ibm_final <- dummy_cols(ibm_prep, 
+                        remove_first_dummy = TRUE,      
+                        remove_selected_columns = TRUE) %>%
+             clean_names() # Garante que os nomes das novas colunas ficam padronizados
+
+# Criar uma comparação visual
+comparativo_dim <- data.frame(
+  Metrica = c("Colunas Pré-Dummies", "Colunas Pós-Dummies (Expandidas)", "Novas Variáveis Criadas"),
+  Quantidade = c(ncol(ibm_prep), ncol(ibm_final), ncol(ibm_final) - ncol(ibm_prep))
+)
+
+# Exibir Tabela de Impacto
+comparativo_dim %>%
+  kable(caption = "Impacto da Transformação de Variáveis Categóricas (One-Hot Encoding)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = F) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50")
+
+# Mostrar as novas colunas 
+data.frame(Exemplos_Novas_Colunas = colnames(ibm_final)[(ncol(ibm_prep)+1):(ncol(ibm_prep)+6)]) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "bordered", full_width = F, position = "float_right")
+```
+A maioria dos algoritmos de Machine Learning não é capaz de processar diretamente variáveis de texto.
+
+Para ultrapassar esta limitação, aplicou‑se a técnica de One‑Hot Encoding, também conhecida por criação de variáveis dummy.
+
+Procedimentos realizados:
+
+1. **Transformação de variáveis categóricas** – Variáveis qualitativas, como `BusinessTravel` ou `Department`, foram convertidas em múltiplas colunas binárias (0/1), representando a presença ou ausência de cada categoria distinta.
+
+2. **Prevenção de multicolinearidade** – Para evitar a chamada _dummy variable trap_, foi ativado o parâmetro `remove_first_dummy = TRUE`, o que remove uma categoria de cada grupo. Assim, por exemplo, no caso de uma variável com as modalidades Masculino e Feminino, apenas uma delas é mantida, dado que a ausência de uma implica a presença da outra.
+
+3. **Expansão controlada do _dataset_** – Após o processo, o número total de variáveis aumentou de 30 para 44, resultando na criação de 14 novas variáveis derivadas.
+
+Esta expansão permite representar de forma mais rica a informação qualitativa, sem introduzir redundância ou comprometer a estabilidade dos modelos preditivos.
+
+## Divisão dos Dados (Treino e Teste)
+```{r divisao_dados, message=FALSE, warning=FALSE}
+library(caTools)
+library(dplyr)
+library(kableExtra)
+
+# Divisão Estratificada 
+set.seed(123)
+split <- sample.split(ibm_final$attrition, SplitRatio = 0.70)
+
+dados_treino <- subset(ibm_final, split == TRUE)
+dados_teste  <- subset(ibm_final, split == FALSE)
+
+# Criar Tabela de Resumo 
+resumo_split <- data.frame(
+  Conjunto = c("Treino (70%)", "Teste (30%)", "Total"),
+  Observações = c(nrow(dados_treino), nrow(dados_teste), nrow(ibm_final)),
+  Taxa_Churn = c(
+    paste0(round(mean(dados_treino$attrition) * 100, 1), "%"),
+    paste0(round(mean(dados_teste$attrition) * 100, 1), "%"),
+    paste0(round(mean(ibm_final$attrition) * 100, 1), "%")
+  )
+)
+
+# Exibir Tabela 
+resumo_split %>%
+  kable(caption = "Divisão de Dados: Verificação de Consistência e Estratificação") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = F, 
+                position = "center") %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50") %>%
+  column_spec(3, bold = T, color = "#E74C3C") 
+```
+A divisão do conjunto de dados foi efetuada através de uma **amostragem estratificada**, assegurando que a proporção da variável‑alvo (`Attrition`) fosse mantida em ambos os subconjuntos (Treino (70%) e Teste (30%)).
+
+Conforme ilustrado na tabela, a **taxa de churn** permanece rigorosamente constante em **16,1%** em ambos os conjuntos. Esta consistência estatística é essencial para evitar distorções na amostragem, garantindo que a amostra de teste funcione como uma réplica representativa do _dataset_ original.
+
+Deste modo, as métricas de desempenho obtidas durante a fase de validação refletem de forma realista e fiável o comportamento do fenómeno de rotatividade na organização, aumentando a credibilidade e generalização dos resultados do modelo.
+
+## Equilíbrio de Classes
+```{r}
+library(ROSE)
+library(ggplot2)
+library(gridExtra)
+
+# Aplicar o ROSE para equilibrar apenas o conjunto de TREINO
+set.seed(123)
+dados_treino_bal <- ROSE(attrition ~ ., data = dados_treino, seed = 123)$data
+
+# Criar dados para o gráfico comparativo
+antes <- as.data.frame(table(dados_treino$attrition))
+antes$Estado <- "1. Antes (Desequilibrado)"
+
+depois <- as.data.frame(table(dados_treino_bal$attrition))
+depois$Estado <- "2. Depois (Equilibrado com ROSE)"
+
+comparativo <- rbind(antes, depois)
+
+# Gráfico 
+ggplot(comparativo, aes(x = Var1, y = Freq, fill = Var1)) +
+  geom_bar(stat = "identity", width = 0.6, alpha = 0.9) +
+  facet_wrap(~Estado) +
+  scale_fill_manual(values = c("0" = "#2C3E50", "1" = "#E74C3C")) +
+  scale_y_continuous(expand = c(0,0), limits = c(0, max(comparativo$Freq)*1.1)) +
+  labs(
+    title = "Estratégia de Rebalanceamento de Dados (ROSE)",
+    subtitle = "Ajuste da classe minoritária para otimizar a aprendizagem do modelo",
+    x = "Status de Saída (0 = Não, 1 = Sim)",
+    y = "Número de Registos"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 14, color = "#2c3e50"),
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.major.x = element_blank()
+  )
+```
+A eficácia de um modelo preditivo depende da qualidade e do equilíbrio estatístico dos dados de treino.
+
+Conforme identificado anteriormente, a variável‑alvo (`Attrition`) apresenta um **desequilíbrio acentuado**, com apenas **16,1% de casos positivos** (colaboradores que saíram da empresa).
+Em contextos reais, este tipo de assimetria tende a levar o modelo a privilegiar a previsão de permanência e a subestimar os padrões de saída.
+
+Para mitigar este problema, aplicou‑se o **algoritmo ROSE** (Random Over‑Sampling Examples) exclusivamente ao conjunto de treino.
+Esta técnica gera **observações sintéticas baseadas na distribuição da classe minoritária**, mantendo a coerência estatística do _dataset_ original.
+
+**Principais benefícios do reequilíbrio**:
+
+* **Nivelamento da aprendizagem** – O modelo passa a ser exposto a uma proporção equilibrada (aproximadamente 50/50) entre colaboradores que saem e que permanecem, o que melhora a sua capacidade de generalização.
+
+* **Melhoria da sensibilidade** (_recall_) – Aumenta‑se a capacidade do modelo de detetar corretamente os casos de saída, permitindo uma identificação precoce de potenciais perdas de talento.
+
+* **Preservação da integridade do teste** – O reequilíbrio foi aplicado apenas aos dados de treino, mantendo o conjunto de teste inalterado.
+
+# Machine Learning
+## Modelo 1: Regressão Logística
+```{r}
+# Treinar o Modelo
+modelo_logistico <- glm(attrition ~ ., data = dados_treino_bal, family = "binomial")
+
+# Fazer Previsões
+previsoes_prob <- predict(modelo_logistico, newdata = dados_teste, type = "response")
+previsoes_classe <- ifelse(previsoes_prob > 0.50, 1, 0)
+
+# Criar Matriz de Confusão 
+tabela_confusao <- table(Realidade = dados_teste$attrition, Previsao = previsoes_classe)
+df_confusao <- as.data.frame(tabela_confusao)
+
+# Gráfico de Matriz de Confusão (Heatmap)
+library(ggplot2)
+ggplot(df_confusao, aes(x = Previsao, y = Realidade, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "white", size = 8, fontface = "bold") +
+  scale_fill_gradient(low = "#34495E", high = "#E74C3C") +
+  labs(title = "Matriz de Confusão: Regressão Logística",
+       subtitle = "Visualização de Acertos e Erros de Previsão",
+       x = "Previsão do Modelo (0=Fica, 1=Sai)",
+       y = "Realidade (0=Fica, 1=Sai)") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold", size = 16),
+        axis.title = element_text(face = "bold"))
+
+# Tabela de Métricas 
+acuracia <- sum(diag(tabela_confusao)) / sum(tabela_confusao)
+sensibilidade <- tabela_confusao[2,2] / sum(tabela_confusao[2,])
+
+metricas <- data.frame(
+  Métrica = c("Acurácia Total", "Sensibilidade (Recall)"),
+  Resultado = c(paste0(round(acuracia * 100, 2), "%"), 
+                paste0(round(sensibilidade * 100, 2), "%"))
+)
+
+library(kableExtra)
+metricas %>%
+  kable(caption = "Performance do Modelo 1") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50")
+```
+**Análise de Desempenho do Modelo 1 (Regressão Logística):**
+
+O primeiro modelo foi treinado com o **conjunto de dados equilibrado** obtido através da técnica ROSE, apresentando uma **acurácia total de 72,79%**.Embora esta métrica seja satisfatória, a acurácia isolada não é suficiente para avaliar o desempenho num problema de retenção de talentos, em que o custo de prever incorretamente uma saída é particularmente elevado.
+
+A seguir apresentam‑se os principais resultados obtidos sobre o **conjunto de teste (441 colaboradores)**:
+
+1. **Capacidade de deteção (Recall): 73,2%**
+
+No conjunto de teste, existiam 71 colaboradores que efetivamente saíram da empresa. O modelo identificou corretamente 52 desses 71 casos. O algoritmo revela uma boa capacidade de deteção, conseguindo sinalizar aproximadamente 3 em cada 4 funcionários em risco de saída.
+Este é o principal ponto forte do modelo, pois assegura que a maioria dos casos críticos é antecipada e pode ser alvo de ações preventivas por parte dos Recursos Humanos.
+
+2. **Custo dos falsos alarmes (Precisão: ~34%)**
+
+Para maximizar a deteção das saídas, o modelo tornou‑se mais sensível, o que resultou num aumento dos falsos positivos. 
+Foram 153 colaboradores sinalizados como potenciais saídas, mas apenas 52 realmente deixaram a empresa.
+O modelo gera um volume considerável de alertas indevidos – cerca de 2 em cada 3 funcionários sinalizados permaneceram na empresa.
+Apesar de eficaz a antecipar saídas reais, o seu funcionamento é “hiper‑vigilante”, podendo levar a intervenções desnecessárias e a uma sobrecarga das equipas de RH.
+
+3. **Matriz de confusão**:
+
+* **Verdadeiros Negativos (269)**: colaboradores que permaneceram e foram corretamente classificados.
+
+* **Falsos Positivos (101)**: colaboradores que permaneceram, mas foram classificados como risco de saída (potencial desperdício de recursos de gestão).
+
+* **Falsos Negativos (19)**: colaboradores que saíram, mas não foram antecipados (perdas imprevistas).
+
+* **Verdadeiros Positivos (52)**: colaboradores que saíram e foram corretamente identificados (oportunidades de retenção antecipada).
+
+**Próximo passo**: Testar um modelo mais robusto, como o Random Forest, com o objetivo de reduzir os falsos positivos sem comprometer a boa sensibilidade alcançada pela regressão logística.
+
+## Modelo 2: Random Forest
+```{r}
+library(randomForest)
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(kableExtra)
+
+# Preparação e Treino
+dados_treino_bal$attrition <- as.factor(dados_treino_bal$attrition)
+dados_teste$attrition <- as.factor(dados_teste$attrition)
+
+set.seed(123)
+modelo_rf <- randomForest(attrition ~ ., 
+                          data = dados_treino_bal, 
+                          ntree = 500, 
+                          importance = TRUE)
+
+# Previsões e Métricas
+previsoes_rf <- predict(modelo_rf, newdata = dados_teste)
+conf_matrix_rf <- confusionMatrix(data = previsoes_rf, 
+                                  reference = dados_teste$attrition, 
+                                  positive = "1")
+
+# Gráfico de Importância das Variáveis
+imp_df <- as.data.frame(importance(modelo_rf))
+imp_df$Variavel <- rownames(imp_df)
+
+ggplot(imp_df %>% arrange(desc(MeanDecreaseAccuracy)) %>% head(15), 
+       aes(x = reorder(Variavel, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#2C3E50", alpha = 0.9, width = 0.7) +
+  coord_flip() +
+  labs(title = "Top 15 Preditoras de Rotatividade",
+       subtitle = "Quais os fatores que mais influenciam a decisão de saída?",
+       x = NULL, y = "Importância (Mean Decrease Accuracy)") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 16),
+        panel.grid.major.y = element_blank())
+
+# Tabela de Performance Comparativa
+metricas_rf <- data.frame(
+  Métrica = c("Acurácia", "Sensibilidade (Recall)", "Especificidade"),
+  Resultado = c(paste0(round(conf_matrix_rf$overall['Accuracy'] * 100, 2), "%"),
+                paste0(round(conf_matrix_rf$byClass['Sensitivity'] * 100, 2), "%"),
+                paste0(round(conf_matrix_rf$byClass['Specificity'] * 100, 2), "%"))
+)
+
+metricas_rf %>%
+  kable(caption = "Performance do Modelo Random Forest") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) %>%
+  row_spec(0, bold = T, color = "white", background = "#2c3e50")
+```
+O modelo **Random Forest** apresentou um **desempenho superior e mais equilibrado** em comparação com a Regressão Logística.
+Com uma **acurácia global de 74,15%**, este algoritmo demonstrou ser uma ferramenta robusta e fiável para apoiar decisões estratégicas de retenção de talento.
+
+1. **Equilíbrio entre deteção e precisão**
+Diferentemente do modelo anterior, a Random Forest revelou‑se mais precisa na distinção entre perfis de risco e de estabilidade.
+
+* **Sensibilidade (_Recall_) de 70,4%**: Identificou corretamente 50 dos 71 colaboradores que efetivamente saíram da empresa.
+
+* **Redução dos falsos positivos**: Embora ainda existam alertas indevidos, o modelo foi mais criterioso na sinalização de risco, diminuindo o ruído operacional para as equipas de Recursos Humanos.
+
+Este equilíbrio traduz‑se numa ferramenta mais “cirúrgica”, capaz de alcançar elevada capacidade de deteção sem sacrificar de forma significativa a precisão das previsões.
+
+
+2. **Principais preditores de rotatividade**
+A análise de importância das variáveis revela os fatores que mais influenciam a decisão de saída, oferecendo _insights_ de gestão extremamente relevantes:
+
+* **`OverTime` (Horas Extra)**: surge como o preditor mais forte, indicando que colaboradores expostos a longas jornadas apresentam propensão significativamente superior à saída.
+
+* **`MonthlyIncome` (Salário)**: confirma que as faixas salariais mais baixas constituem a zona de maior vulnerabilidade em termos de rotatividade.
+
+* **`StockOptionLevel`**: a ausência de incentivos de longo prazo (como planos de ações) está associada a menor compromisso organizacional.
+
+* **`Age` e `TotalWorkingYears`**: trabalhadores mais jovens e com menos anos de experiência mostram‑se mais propensos à mobilidade externa.
+
+Estes resultados corroboram a literatura de Recursos Humanos, destacando o papel conjunto de fatores financeiros, de carga laboral e de experiência como determinantes da rotatividade.
+
+3. **Conclusão técnica e interpretativa**
+A Random Forest mostrou‑se capaz de captar padrões não lineares e interações complexas que modelos lineares não conseguem representar.
+O algoritmo identificou, por exemplo, que um salário médio pode ser aceitável isoladamente, mas torna‑se fator de risco quando combinado com excesso de horas extra ou baixa satisfação na relação com o gestor.
+Em suma, este modelo não apenas melhora o desempenho preditivo, mas também fornece informação acionável para políticas de retenção personalizadas e gestão preventiva do talento.
+
+
+## Análise de Drivers de Saída (Feature Importance)
+```{r}
+# Extrair a importância das variáveis do modelo Random Forest
+importancia <- as.data.frame(importance(modelo_rf))
+importancia$Variavel <- rownames(importancia)
+
+# Criar o gráfico
+library(ggplot2)
+library(dplyr)
+
+ggplot(importancia %>% arrange(desc(MeanDecreaseAccuracy)) %>% head(15), 
+       aes(x = reorder(Variavel, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_bar(stat = "identity", fill = "#2C3E50", alpha = 0.9, width = 0.7) +
+  geom_text(aes(label = round(MeanDecreaseAccuracy, 1)), 
+            hjust = -0.2, size = 3, fontface = "bold", color = "#2C3E50") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Drivers Críticos de Attrition",
+    subtitle = "Variáveis que mais impactam a precisão do modelo Random Forest",
+    x = NULL,
+    y = "Importância (Mean Decrease Accuracy)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, color = "#2c3e50"),
+    plot.subtitle = element_text(size = 11, color = "grey40"),
+    panel.grid.major.y = element_blank(),
+    axis.text.y = element_text(face = "bold", size = 10)
+  )
+```
+O gráfico acima apresenta as variáveis mais determinantes identificadas pelo modelo Random Forest, ordenadas pela métrica “Mean Decrease Accuracy”.
+Em termos práticos, quanto maior a importância desta métrica, maior é o contributo da variável para a capacidade preditiva global do modelo, ou seja, a sua remoção resultaria numa diminuição significativa da precisão.
+
+1. **O cargo como principal determinante (`JobRole`)**
+Quatro das cinco variáveis mais relevantes estão relacionadas com funções específicas dentro da organização.
+Destacam‑se dois extremos: `Research Director` (função com elevada estabilidade) e Sales` Representative` (função mais volátil).
+
+Esta diferença confirma as conclusões obtidas na análise exploratória: o nível hierárquico e o tipo de função são os fatores que mais diferenciam o comportamento de rotatividade na empresa.
+
+**Implicação**: Políticas genéricas de gestão de pessoas (“one‑size‑fits‑all”) são ineficazes.
+
+A estratégia de retenção deve ser personalizada por área funcional, reconhecendo que vendas e investigação/rede de liderança exigem abordagens de motivação e reconhecimento distintas.
+
+2. **O peso das horas extra (`OverTime`)**
+A variável `over_time_yes` surge como o terceiro preditor mais crítico de todo o conjunto.
+Este resultado reforça a evidência de que a sobrecarga de trabalho e a falta de equilíbrio vida‑profissional constituem gatilhos diretos de saída.
+Tratar‑se‑á menos de uma questão de remuneração e mais de bem‑estar organizacional e prevenção de _burnout._
+
+3. **Estagnação e incentivos de longo prazo**
+
+* **Estagnação**: A variável `years_in_current_role` (anos na função atual) destaca‑se na 6.ª posição. A permanência prolongada na mesma função, sem progressão visível, aumenta substancialmente o risco de saída voluntária.
+
+* **Incentivos**: O `stock_option_level` surge logo de seguida, evidenciando que os incentivos de longo prazo (“algemas de ouro”) têm um efeito de retenção mais forte do que o salário mensal (`monthly_income`), que aparece apenas na 15.ª posição.
+
+Estes resultados sugerem que a progressão de carreira e a valorização de capital simbólico (ações, reconhecimento, visibilidade) são mecanismos de retenção mais eficazes do que aumentos salariais isolados.
+
+4. **Perfil demográfico de risco**
+A presença das variáveis `marital_status_single` e age entre as 15 mais relevantes confirma o padrão identificado nas análises anteriores: colaboradores mais jovens e solteiros tendem a apresentar maior mobilidade e predisposição para mudança, sobretudo em contextos de poucas perspetivas de crescimento.
+
+Para mitigar os **riscos de _attrition_**, recomenda‑se que as ações prioritárias da empresa incidam sobre três eixos principais:
+
+1. Rever as condições e incentivos das equipas de Vendas, onde a taxa de saída é mais elevada;
+
+2. Monitorizar e regular o volume de horas extra, promovendo práticas de equilíbrio e bem‑estar;
+
+3. Implementar planos de rotação e desenvolvimento de carreira, especialmente para colaboradores estagnados na mesma função há vários anos.
+
+Estas ações estratégicas alinham‑se diretamente com os resultados do modelo e podem reduzir substancialmente o risco de rotatividade não desejada, fortalecendo a retenção de talento crítico.
+
+# Conclusão e Recomendações de Negócio
+
+Este projeto teve como objetivo identificar as causas da rotatividade de funcionários (Attrition) e criar um modelo preditivo para mitigar o risco.
+
+## Comparação de Modelos
+Foram testadas duas abordagens distintas: Regressão Logística e Random Forest.
+
+O **Random Forest** demonstrou **desempenho superior e maior estabilidade**, alcançando uma **acurácia global de 74,15%**.
+
+O modelo é capaz de **identificar corretamente 70,4% dos colaboradores que efetivamente saem da empresa** (sensibilidade), mantendo, em simultâneo, uma **taxa de falsos alarmes controlada** (especificidade de 74,9%).
+
+Estas métricas evidenciam um **equilíbrio adequado entre deteção e precisão**, tornando o algoritmo uma ferramenta eficaz para uso prático em contextos de Recursos Humanos.
+
+## Fatores Críticos de Saída (_Insights_ do Modelo)
+A análise de importância das variáveis (Feature Importance) evidenciou três pilares centrais de ação:
+
+1. **O Risco Associado à Função de Vendas**
+
+A função `Sales Representative` surge como o **maior preditor de saída**. A taxa de rotatividade neste cargo é substancialmente superior à observada em funções estáveis como `Research Director` ou `Manager.`
+
+**Diagnóstico provável**: Desajuste no esquema de comissões, pressão elevada por resultados ou falta de perspetivas de progressão.
+
+2. **Cultura de Horas Extra e Exaustão Ocupacional**
+
+A variável `OverTime` mantém‑se entre os **três fatores mais críticos**, confirmando que a **sobrecarga de trabalho é um dos gatilhos diretos de saída**. Colaboradores que realizam horas extra apresentam probabilidade significativamente superior de sair da empresa, independentemente do nível salarial.
+
+**Interpretação**: este comportamento sugere sinais de _burnout_ e desequilíbrio vida‑trabalho, áreas que requerem monitorização ativa.
+
+3. **Retenção através de Incentivos de Capital**
+
+O `StockOptionLevel` mostra‑se **determinante para a retenção de colaboradores**. Funcionários com participação acionista ou incentivos de longo prazo tendem a reter‑se por mais tempo, reforçando o sentimento de pertença e compromisso organizacional. Inversamente, a ausência deste fator está fortemente associada a maior propensão à saída.
+
+## Plano de Ação Recomendado (Próximos Passos)
+
+Com base nas evidências analíticas, recomenda‑se a implementação das seguintes medidas:
+
+1. **Intervenção direcionada nas equipas de Vendas**: Realizar entrevistas de saída específicas para Representantes de Vendas, com foco na revisão de políticas de comissão, objetivos e plano de carreira.
+
+2. **Auditoria de Carga Horária e Bem‑Estar**: Estabelecer mecanismos de controlo das horas extra, garantindo a sua compensação adequada (via folgas ou benefícios). Simultaneamente, promover programas de prevenção de _burnout_ e de equilíbrio vida‑trabalho.
+
+3. **Ferramenta de Previsão Contínua de Rotatividade**: Integrar o modelo Random Forest como um sistema mensal de monitorização preditiva, uma “lista de risco” dinâmica, destacando colaboradores com probabilidade de saída superior a 50%. Esta informação deve ser utilizada de forma proativa, permitindo à equipa de RH agir antes da decisão de sair da empresa.
